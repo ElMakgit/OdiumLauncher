@@ -13,14 +13,20 @@ use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
+use futures_util::StreamExt;
 use pml_config::{LoaderKind, LoaderSpec};
 use pml_downloader::{hash_bytes, is_safe_relative, HashAlgo};
 use serde::Deserialize;
+use tokio::io::AsyncWriteExt as _;
 
 use crate::{Manifest, ManifestFile, ModpackError, MANIFEST_SCHEMA_VERSION};
 
 pub const INDEX_FILE: &str = "modrinth.index.json";
 const OVERRIDE_PREFIXES: [&str; 2] = ["overrides/", "client-overrides/"];
+/// Hard caps for `overrides/` extraction. A pack that ships more than this is
+/// either corrupt or hostile; refusing early beats filling the disk.
+pub const MAX_OVERRIDE_BYTES: u64 = 1024 * 1024 * 1024;
+pub const MAX_OVERRIDE_FILES: usize = 20_000;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MrpackIndex {
@@ -252,14 +258,11 @@ pub async fn fetch(
     };
     let etag = header_value(&response, reqwest::header::ETAG);
     let last_modified = header_value(&response, reqwest::header::LAST_MODIFIED);
-    let bytes = response.bytes().await?;
     let part = archive.with_extension("mrpack.part");
-    tokio::fs::write(&part, &bytes)
-        .await
-        .map_err(|source| ModpackError::Io {
-            path: part.clone(),
-            source,
-        })?;
+    if let Err(error) = stream_response_to_file(response, &part).await {
+        let _ = tokio::fs::remove_file(&part).await;
+        return Err(error);
+    }
     tokio::fs::rename(&part, &archive)
         .await
         .map_err(|source| ModpackError::Io {
@@ -286,6 +289,48 @@ fn header_value(response: &reqwest::Response, name: reqwest::header::HeaderName)
         .map(str::to_owned)
 }
 
+/// Streams the response body to `dest` chunk by chunk. A 500 MiB pack must not
+/// be buffered in RAM just to be written to disk; the caller renames the
+/// finished `.part` file into place.
+async fn stream_response_to_file(
+    response: reqwest::Response,
+    dest: &Path,
+) -> Result<(), ModpackError> {
+    if let Some(parent) = dest.parent() {
+        tokio::fs::create_dir_all(parent)
+            .await
+            .map_err(|source| ModpackError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+    }
+    let mut file = tokio::fs::File::create(dest)
+        .await
+        .map_err(|source| ModpackError::Io {
+            path: dest.to_path_buf(),
+            source,
+        })?;
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        file.write_all(&chunk)
+            .await
+            .map_err(|source| ModpackError::Io {
+                path: dest.to_path_buf(),
+                source,
+            })?;
+    }
+    file.flush().await.map_err(|source| ModpackError::Io {
+        path: dest.to_path_buf(),
+        source,
+    })?;
+    file.sync_all().await.map_err(|source| ModpackError::Io {
+        path: dest.to_path_buf(),
+        source,
+    })?;
+    Ok(())
+}
+
 pub fn read_index(path: &Path) -> Result<MrpackIndex, ModpackError> {
     let file = std::fs::File::open(path).map_err(|source| ModpackError::Io {
         path: path.to_path_buf(),
@@ -310,6 +355,32 @@ pub fn read_index(path: &Path) -> Result<MrpackIndex, ModpackError> {
 /// Extracts `overrides/` and `client-overrides/` into the instance directory.
 /// Paths are validated so a malicious archive cannot escape the instance.
 pub fn extract_overrides(archive: &Path, instance_dir: &Path) -> Result<usize, ModpackError> {
+    extract_overrides_with_limits(
+        archive,
+        instance_dir,
+        MAX_OVERRIDE_BYTES,
+        MAX_OVERRIDE_FILES,
+    )
+}
+
+/// Same as [`extract_overrides`] with explicit caps, which also makes the
+/// limits testable without building a gigabyte archive.
+pub fn extract_overrides_with_limits(
+    archive: &Path,
+    instance_dir: &Path,
+    max_bytes: u64,
+    max_files: usize,
+) -> Result<usize, ModpackError> {
+    std::fs::create_dir_all(instance_dir).map_err(|source| ModpackError::Io {
+        path: instance_dir.to_path_buf(),
+        source,
+    })?;
+    let instance_canonical = instance_dir
+        .canonicalize()
+        .map_err(|source| ModpackError::Io {
+            path: instance_dir.to_path_buf(),
+            source,
+        })?;
     let file = std::fs::File::open(archive).map_err(|source| ModpackError::Io {
         path: archive.to_path_buf(),
         source,
@@ -318,10 +389,16 @@ pub fn extract_overrides(archive: &Path, instance_dir: &Path) -> Result<usize, M
         ModpackError::Validation(format!("не удалось открыть .mrpack: {error}"))
     })?;
     let mut written = 0;
+    let mut total_bytes: u64 = 0;
     for index in 0..zip.len() {
         let mut entry = zip.by_index(index).map_err(|error| {
             ModpackError::Validation(format!("не удалось прочитать файл архива: {error}"))
         })?;
+        if let Some(mode) = entry.unix_mode() {
+            if mode & 0o170000 == 0o120000 {
+                return Err(ModpackError::UnsafePath(entry.name().to_owned()));
+            }
+        }
         let Some(enclosed) = entry.enclosed_name() else {
             continue;
         };
@@ -338,12 +415,31 @@ pub fn extract_overrides(archive: &Path, instance_dir: &Path) -> Result<usize, M
         if !is_safe_relative(Path::new(relative)) {
             return Err(ModpackError::UnsafePath(relative.to_owned()));
         }
+        if written >= max_files {
+            return Err(ModpackError::Validation(format!(
+                "в overrides больше {max_files} файлов"
+            )));
+        }
+        total_bytes = total_bytes.saturating_add(entry.size());
+        if total_bytes > max_bytes {
+            return Err(ModpackError::Validation(format!(
+                "overrides распаковываются более чем в {} МиБ",
+                max_bytes / (1024 * 1024)
+            )));
+        }
         let destination = instance_dir.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
         if let Some(parent) = destination.parent() {
             std::fs::create_dir_all(parent).map_err(|source| ModpackError::Io {
                 path: parent.to_path_buf(),
                 source,
             })?;
+            let parent_canonical = parent.canonicalize().map_err(|source| ModpackError::Io {
+                path: parent.to_path_buf(),
+                source,
+            })?;
+            if !parent_canonical.starts_with(&instance_canonical) {
+                return Err(ModpackError::UnsafePath(relative.to_owned()));
+            }
         }
         let mut output =
             std::fs::File::create(&destination).map_err(|source| ModpackError::Io {
@@ -440,6 +536,52 @@ mod tests {
         assert_eq!(written, 1, "only the safe entry is extracted");
         assert!(!directory.path().join("evil.txt").exists());
         assert!(instance.join("config").join("ok.toml").is_file());
+        Ok(())
+    }
+
+    #[test]
+    fn extract_overrides_rejects_symlinks() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let archive = directory.path().join("symlink.mrpack");
+        {
+            let file = std::fs::File::create(&archive)?;
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            // `add_symlink` writes the full `S_IFLNK` mode; `unix_permissions`
+            // would mask the file-type bits away.
+            writer.add_symlink("overrides/link", "/etc/passwd", options)?;
+            writer.finish()?;
+        }
+
+        let instance = directory.path().join("instance");
+        let error = extract_overrides(&archive, &instance).expect_err("symlink must be rejected");
+        assert!(matches!(error, ModpackError::UnsafePath(_)));
+        assert!(!instance.join("link").exists());
+        Ok(())
+    }
+
+    #[test]
+    fn extract_overrides_enforces_limits() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let archive = directory.path().join("big.mrpack");
+        {
+            let file = std::fs::File::create(&archive)?;
+            let mut writer = zip::ZipWriter::new(file);
+            let options = zip::write::SimpleFileOptions::default();
+            for name in ["overrides/a.bin", "overrides/b.bin"] {
+                writer.start_file(name, options)?;
+                std::io::Write::write_all(&mut writer, &[0u8; 10])?;
+            }
+            writer.finish()?;
+        }
+
+        let instance = directory.path().join("instance");
+        let error = extract_overrides_with_limits(&archive, &instance, 15, 100)
+            .expect_err("size limit must be enforced");
+        assert!(matches!(error, ModpackError::Validation(_)));
+        let error = extract_overrides_with_limits(&archive, &instance, 1024, 1)
+            .expect_err("file limit must be enforced");
+        assert!(matches!(error, ModpackError::Validation(_)));
         Ok(())
     }
 }

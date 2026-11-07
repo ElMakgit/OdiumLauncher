@@ -24,6 +24,9 @@ pub use mrpack::{extract_overrides, read_index, MrpackArchive, MrpackIndex};
 
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const STATE_FILE: &str = ".pml_manifest_state.json";
+/// Manifests are JSON documents of a few hundred KiB; anything larger is a
+/// broken or hostile endpoint and must not be buffered without a cap.
+const MAX_MANIFEST_BYTES: usize = 32 * 1024 * 1024;
 
 pub const BUILTIN_VANILLA_ID: &str = "builtin://vanilla";
 pub const BUILTIN_VANILLA: &str = r#"{
@@ -296,7 +299,7 @@ pub async fn load_manifest(
         }
     };
 
-    let bytes = match response.bytes().await {
+    let bytes = match read_limited_body(response, url).await {
         Ok(bytes) => bytes,
         Err(error) => {
             tracing::warn!(%error, %url, "manifest body failed, trying cache");
@@ -333,6 +336,29 @@ pub async fn load_manifest(
             source,
         })?;
     Ok(manifest)
+}
+
+/// Streams an HTTP body into a byte vector while enforcing a hard size cap, so
+/// a huge response cannot exhaust launcher memory.
+async fn read_limited_body(
+    response: reqwest::Response,
+    url: &str,
+) -> Result<Vec<u8>, ModpackError> {
+    use futures_util::StreamExt as _;
+
+    let mut body = Vec::new();
+    let mut stream = response.bytes_stream();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if body.len().saturating_add(chunk.len()) > MAX_MANIFEST_BYTES {
+            return Err(ModpackError::Validation(format!(
+                "манифест {url} больше {} МиБ",
+                MAX_MANIFEST_BYTES / (1024 * 1024)
+            )));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 /// Reads the last successfully downloaded manifest. A corrupt cache entry is

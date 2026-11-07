@@ -2256,6 +2256,8 @@ dependencies = [
  "futures-util",
  "hex",
  "reqwest",
+ "serde",
+ "serde_json",
  "sha1",
  "sha2",
  "tempfile",
@@ -2330,6 +2332,7 @@ dependencies = [
 name = "pml-modpack"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "pml-config",
  "pml-downloader",
  "reqwest",
