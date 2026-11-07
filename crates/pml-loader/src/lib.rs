@@ -8,6 +8,7 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::time::Duration;
 
 use pml_config::{LoaderKind, LoaderSpec, PortablePaths};
 use pml_downloader::{DownloadEvent, DownloadTask, Downloader, HashAlgo};
@@ -19,6 +20,9 @@ const FABRIC_META: &str = "https://meta.fabricmc.net/v2/versions/loader";
 const QUILT_META: &str = "https://meta.quiltmc.org/v3/versions/loader";
 const FORGE_MAVEN: &str = "https://maven.minecraftforge.net/net/minecraftforge/forge";
 const NEOFORGE_MAVEN: &str = "https://maven.neoforged.net/releases/net/neoforged/neoforge";
+/// A Forge/NeoForge installer may need to download libraries, but it must never
+/// hang the launch forever when Maven or the network stalls.
+const INSTALLER_TIMEOUT: Duration = Duration::from_secs(300);
 
 #[derive(Debug, Error)]
 pub enum LoaderError {
@@ -66,7 +70,6 @@ struct InstallerRequest<'a> {
     cache: &'a Path,
     java_exe: &'a Path,
     version_id: &'a str,
-    marker: &'a str,
 }
 
 impl LoaderInstaller {
@@ -106,7 +109,6 @@ impl LoaderInstaller {
                         cache: &cache,
                         java_exe,
                         version_id: &version_id,
-                        marker: "forge",
                     },
                     progress,
                 )
@@ -123,7 +125,6 @@ impl LoaderInstaller {
                         cache: &cache,
                         java_exe,
                         version_id: &version_id,
-                        marker: "neoforge",
                     },
                     progress,
                 )
@@ -176,11 +177,10 @@ impl LoaderInstaller {
             cache,
             java_exe,
             version_id,
-            marker,
         } = request;
         // The installer also writes its JSON into versions/. Reuse it when it is
         // already there, which makes subsequent launches network-free.
-        if let Some(profile) = self.locate_version_json(version_id, marker).await {
+        if let Some(profile) = self.locate_version_json(version_id).await {
             tracing::debug!(path = %profile.display(), "using installed loader profile");
             return read_profile_required(&profile).await;
         }
@@ -195,6 +195,13 @@ impl LoaderInstaller {
                     })?;
             }
             let sha1 = fetch_sha1(&self.downloader, url).await;
+            if sha1.is_none() {
+                tracing::warn!(
+                    url,
+                    loader = loader_name,
+                    "installer .sha1 is unavailable; downloading without hash verification"
+                );
+            }
             let task = DownloadTask::new(
                 url,
                 cache.to_path_buf(),
@@ -224,10 +231,26 @@ impl LoaderInstaller {
             .kill_on_drop(true);
         hide_console(&mut command);
 
-        let output = command
-            .output()
-            .await
-            .map_err(|source| LoaderError::Spawn(format!("{}: {source}", java_exe.display())))?;
+        let output = match tokio::time::timeout(INSTALLER_TIMEOUT, command.output()).await {
+            Ok(result) => result.map_err(|source| {
+                LoaderError::Spawn(format!("{}: {source}", java_exe.display()))
+            })?,
+            Err(_) => {
+                tracing::warn!(
+                    loader = loader_name,
+                    seconds = INSTALLER_TIMEOUT.as_secs(),
+                    "loader installer timed out and was killed"
+                );
+                return Err(LoaderError::InstallerFailed {
+                    loader: loader_name.to_owned(),
+                    code: None,
+                    tail: format!(
+                        "превышен таймаут установщика {} с",
+                        INSTALLER_TIMEOUT.as_secs()
+                    ),
+                });
+            }
+        };
         if !output.status.success() {
             return Err(LoaderError::InstallerFailed {
                 loader: loader_name.to_owned(),
@@ -240,7 +263,7 @@ impl LoaderInstaller {
             });
         }
 
-        if let Some(profile) = self.locate_version_json(version_id, marker).await {
+        if let Some(profile) = self.locate_version_json(version_id).await {
             return read_profile_required(&profile).await;
         }
 
@@ -248,7 +271,7 @@ impl LoaderInstaller {
         // write into the default `%APPDATA%\.minecraft` instead. Copy that JSON
         // into our portable tree; pml-minecraft will fetch its libraries itself.
         if let Some(default_versions) = default_minecraft_versions() {
-            if let Some(profile) = find_version_json(&default_versions, version_id, marker).await {
+            if let Some(profile) = find_version_json(&default_versions, version_id).await {
                 let file_name = format!("{version_id}.json");
                 let dest = self.paths.versions_dir().join(version_id).join(&file_name);
                 if let Some(parent) = dest.parent() {
@@ -302,8 +325,8 @@ impl LoaderInstaller {
             .map_err(|source| LoaderError::Io { path, source })
     }
 
-    async fn locate_version_json(&self, version_id: &str, marker: &str) -> Option<PathBuf> {
-        find_version_json(&self.paths.versions_dir(), version_id, marker).await
+    async fn locate_version_json(&self, version_id: &str) -> Option<PathBuf> {
+        find_version_json(&self.paths.versions_dir(), version_id).await
     }
 
     fn profile_cache(&self, loader: &str, mc_version: &str, version: &str) -> PathBuf {
@@ -355,12 +378,15 @@ async fn read_profile_required(path: &Path) -> Result<VersionJson, LoaderError> 
     })
 }
 
-async fn find_version_json(root: &Path, version_id: &str, marker: &str) -> Option<PathBuf> {
+async fn find_version_json(root: &Path, version_id: &str) -> Option<PathBuf> {
     let direct = root.join(version_id).join(format!("{version_id}.json"));
     if direct.is_file() {
         return Some(direct);
     }
 
+    // Only an exact `{version_id}.json` name is accepted: guessing by loader
+    // marker used to pick an unrelated profile and could start the wrong
+    // version.
     let mut entries = tokio::fs::read_dir(root).await.ok()?;
     while let Some(entry) = entries.next_entry().await.ok()? {
         let directory = entry.path();
@@ -371,25 +397,12 @@ async fn find_version_json(root: &Path, version_id: &str, marker: &str) -> Optio
         if file.is_file() {
             return Some(file);
         }
-        // Last resort: any JSON in this directory whose id contains the loader
-        // marker. This covers Forge's occasional version-id suffix changes.
-        let Ok(mut files) = tokio::fs::read_dir(&directory).await else {
-            continue;
-        };
-        while let Some(candidate) = files.next_entry().await.ok()? {
-            let path = candidate.path();
-            if path.extension().is_none_or(|extension| extension != "json") {
-                continue;
-            }
-            if let Some(profile) = read_profile(&path).await {
-                if profile.id.contains(marker)
-                    && (profile.id == version_id || profile.inherits_from.is_some())
-                {
-                    return Some(path);
-                }
-            }
-        }
     }
+    tracing::debug!(
+        version_id,
+        root = %root.display(),
+        "loader profile with the exact version id was not found"
+    );
     None
 }
 
@@ -497,5 +510,29 @@ mod tests {
         let tail = tail(&text);
         assert!(tail.starts_with("8\n"));
         assert!(tail.ends_with("\n19"));
+    }
+
+    #[tokio::test]
+    async fn profile_lookup_requires_the_exact_id() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let versions = directory.path().join("versions");
+        std::fs::create_dir_all(versions.join("forge-other"))?;
+        std::fs::write(
+            versions.join("forge-other").join("other.json"),
+            br#"{"id":"1.21.1-forge-99.0.0","inheritsFrom":"1.21.1"}"#,
+        )?;
+
+        assert!(find_version_json(&versions, "1.21.1-forge-52.0.28")
+            .await
+            .is_none());
+
+        std::fs::create_dir_all(versions.join("exact"))?;
+        let exact = versions.join("exact").join("1.21.1-forge-52.0.28.json");
+        std::fs::write(&exact, br#"{"id":"1.21.1-forge-52.0.28"}"#)?;
+        assert_eq!(
+            find_version_json(&versions, "1.21.1-forge-52.0.28").await,
+            Some(exact)
+        );
+        Ok(())
     }
 }

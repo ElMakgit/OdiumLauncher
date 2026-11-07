@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use futures_util::{StreamExt, TryStreamExt};
@@ -32,6 +33,11 @@ const API: &str = "https://api.github.com";
 const USER_AGENT: &str = "OdiumLauncher-publisher";
 const UPLOAD_CHUNK: usize = 64 * 1024;
 const BLOB_CONCURRENCY: usize = 8;
+/// GitHub can be slow when many blobs are uploaded; a stalled socket must not
+/// block the publisher forever.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
+const MAX_ATTEMPTS: usize = 3;
 
 /// Progress callback payload. The UI maps these to a log line or a progress bar.
 #[derive(Debug, Clone)]
@@ -41,6 +47,31 @@ pub enum Progress {
 }
 
 type Reporter = Arc<dyn Fn(Progress) + Send + Sync>;
+
+fn retryable_status(status: StatusCode) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error()
+}
+
+fn retryable_network(error: &reqwest::Error) -> bool {
+    error.is_timeout() || error.is_connect() || error.is_request() || error.is_body()
+}
+
+/// Exponential backoff with ±20% jitter so parallel blob uploads do not retry
+/// in lockstep after a rate limit.
+fn retry_delay(attempt: usize) -> Duration {
+    let base = 500u64 << attempt.min(6);
+    let spread = base / 5;
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.subsec_nanos())
+        .unwrap_or(0) as u64;
+    let jitter = if spread == 0 {
+        0
+    } else {
+        nanos % (spread * 2 + 1)
+    };
+    Duration::from_millis(base - spread + jitter)
+}
 
 fn stage(report: &Reporter, text: impl Into<String>) {
     report(Progress::Stage(text.into()));
@@ -156,7 +187,11 @@ pub struct Publisher {
 
 impl Publisher {
     pub fn new(token: impl Into<String>) -> Result<Self, PublishError> {
-        let client = reqwest::Client::builder().user_agent(USER_AGENT).build()?;
+        let client = reqwest::Client::builder()
+            .user_agent(USER_AGENT)
+            .connect_timeout(CONNECT_TIMEOUT)
+            .timeout(REQUEST_TIMEOUT)
+            .build()?;
         Ok(Self {
             client,
             token: token.into(),
@@ -182,10 +217,67 @@ impl Publisher {
         &self,
         request: reqwest::RequestBuilder,
     ) -> Result<(StatusCode, String), PublishError> {
-        let response = request.send().await?;
-        let status = response.status();
-        let text = response.text().await?;
-        Ok((status, text))
+        let mut last_error: Option<PublishError> = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            let Some(attempt_request) = request.try_clone() else {
+                return Err(PublishError::Api(
+                    "не удалось повторить запрос: тело запроса нельзя клонировать".to_owned(),
+                ));
+            };
+            match attempt_request.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    let text = match response.text().await {
+                        Ok(text) => text,
+                        Err(error) => {
+                            if attempt + 1 < MAX_ATTEMPTS {
+                                last_error = Some(PublishError::Http(error));
+                                let delay = retry_delay(attempt);
+                                tracing::warn!(
+                                    attempt = attempt + 1,
+                                    delay_ms = delay.as_millis(),
+                                    "GitHub response body failed, retrying"
+                                );
+                                tokio::time::sleep(delay).await;
+                                continue;
+                            }
+                            return Err(error.into());
+                        }
+                    };
+                    if attempt + 1 < MAX_ATTEMPTS && retryable_status(status) {
+                        let delay = retry_delay(attempt);
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            status = status.as_u16(),
+                            delay_ms = delay.as_millis(),
+                            "GitHub request failed, retrying"
+                        );
+                        last_error = Some(api_error("запрос к GitHub", status, &text));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Ok((status, text));
+                }
+                Err(error) => {
+                    if attempt + 1 < MAX_ATTEMPTS && retryable_network(&error) {
+                        let delay = retry_delay(attempt);
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            delay_ms = delay.as_millis(),
+                            %error,
+                            "GitHub network request failed, retrying"
+                        );
+                        last_error = Some(PublishError::Http(error));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(error.into());
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            PublishError::Api("запрос к GitHub не удался без конкретной ошибки".to_owned())
+        }))
     }
 
     async fn ensure_repo(
@@ -887,7 +979,21 @@ pub struct DistResult {
 /// `README.txt` and packs everything into a ZIP next to the output folder.
 pub fn build_dist(request: &DistRequest) -> Result<DistResult, PublishError> {
     let dir = request.output_dir.clone();
-    let launcher_data = dir.join("launcher_data");
+    let parent = dir.parent().unwrap_or_else(|| Path::new("."));
+    let Some(name) = dir.file_name() else {
+        return Err(PublishError::MissingFile(format!(
+            "некорректная папка сборки: {}",
+            dir.display()
+        )));
+    };
+    // Build into a sibling staging folder, then swap it in. A failed build never
+    // leaves a half-written dist, and a successful build never ships files from
+    // a previous run.
+    let staging = parent.join(format!(".{}.building", name.to_string_lossy()));
+    if staging.exists() {
+        std::fs::remove_dir_all(&staging)?;
+    }
+    let launcher_data = staging.join("launcher_data");
     std::fs::create_dir_all(&launcher_data)?;
 
     let config = Config {
@@ -919,7 +1025,7 @@ pub fn build_dist(request: &DistRequest) -> Result<DistResult, PublishError> {
     };
     let mut exe_copied = false;
     if exe_source.is_file() {
-        std::fs::copy(&exe_source, dir.join("OdiumLauncher.exe"))?;
+        std::fs::copy(&exe_source, staging.join("OdiumLauncher.exe"))?;
         exe_copied = true;
     }
 
@@ -936,13 +1042,15 @@ pub fn build_dist(request: &DistRequest) -> Result<DistResult, PublishError> {
          Сервер добавится в список сетевых игр.\r\n",
         request.source_name, request.pack_label
     );
-    std::fs::write(dir.join("README.txt"), readme)?;
+    std::fs::write(staging.join("README.txt"), readme)?;
 
-    let zip_path = dir
-        .parent()
-        .unwrap_or(&dir)
-        .join(format!("OdiumLauncher-{}.zip", request.source_id));
-    write_zip(&dir, &zip_path)?;
+    let zip_path = parent.join(format!("OdiumLauncher-{}.zip", request.source_id));
+    write_zip(&staging, &zip_path)?;
+
+    if dir.exists() {
+        std::fs::remove_dir_all(&dir)?;
+    }
+    std::fs::rename(&staging, &dir)?;
 
     Ok(DistResult {
         dir,
@@ -997,6 +1105,21 @@ mod tests {
         );
         assert!(Repo::parse("only-owner").is_err());
         assert!(Repo::parse("bad owner/repo").is_err());
+    }
+
+    #[test]
+    fn retry_delay_has_jitter_bounds() {
+        for attempt in 0..6 {
+            let base = 500u64 << attempt;
+            let spread = base / 5;
+            for _ in 0..32 {
+                let millis = retry_delay(attempt).as_millis() as u64;
+                assert!(
+                    (base - spread..=base + spread).contains(&millis),
+                    "attempt {attempt}: {millis} ms outside ±20% of {base} ms"
+                );
+            }
+        }
     }
 
     #[test]
@@ -1081,6 +1204,8 @@ mod tests {
         let fake_exe = temp.path().join("fake.exe");
         std::fs::write(&fake_exe, b"exe").expect("write");
         let output = temp.path().join("dist");
+        std::fs::create_dir_all(&output).expect("old dist");
+        std::fs::write(output.join("stale-from-previous-build.txt"), b"leak").expect("stale");
         let result = build_dist(&DistRequest {
             output_dir: output.clone(),
             source_id: "test-pack".to_owned(),
@@ -1105,6 +1230,10 @@ mod tests {
         assert!(config.contains("\"mrpack\""));
         assert!(config.contains("https://example.com/pack.mrpack"));
         assert!(config.contains("\"auto_xmx\": true"));
+        assert!(
+            !output.join("stale-from-previous-build.txt").exists(),
+            "files from the previous build must not leak into the new dist"
+        );
         assert!(result.zip.is_file());
     }
 }
