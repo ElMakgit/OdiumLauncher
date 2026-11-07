@@ -81,13 +81,7 @@ pub fn run(
         Box::new(move |creation| {
             pml_theme::apply(&creation.egui_ctx, theme);
             Ok(Box::new(LauncherApp::new(
-                paths,
-                store,
-                runtime,
-                downloader,
-                backdrop,
-                dog_icon,
-                &creation.egui_ctx,
+                paths, store, runtime, downloader, backdrop,
             )))
         }),
     )
@@ -128,7 +122,6 @@ struct LauncherApp {
     glass_enabled: Option<bool>,
     hwnd: Option<isize>,
     backdrop: glass::Backdrop,
-    dog_texture: Option<egui::TextureHandle>,
     settings_open: bool,
 }
 
@@ -139,19 +132,10 @@ impl LauncherApp {
         runtime: tokio::runtime::Handle,
         downloader: Downloader,
         backdrop: glass::Backdrop,
-        dog_icon: Option<egui::IconData>,
-        ctx: &egui::Context,
     ) -> Self {
         let config = store.config();
         let welcome_open = !config.welcome_seen;
         let theme = config.theme;
-        let dog_texture = dog_icon.map(|icon| {
-            let image = egui::ColorImage::from_rgba_unmultiplied(
-                [icon.width as usize, icon.height as usize],
-                &icon.rgba,
-            );
-            ctx.load_texture("dog_face", image, egui::TextureOptions::LINEAR)
-        });
         // Leave at least 1 GiB for Windows and background apps, and never offer
         // more than the physical RAM installed in this machine.
         let total_ram_mb = total_system_ram_mb();
@@ -203,7 +187,6 @@ impl LauncherApp {
             glass_enabled: None,
             hwnd: None,
             backdrop,
-            dog_texture,
             settings_open: false,
         }
     }
@@ -521,18 +504,6 @@ impl eframe::App for LauncherApp {
         }
         self.poll_events(ctx);
         self.poll_publisher(ctx);
-
-        egui::TopBottomPanel::top("pml_title")
-            .exact_height(pml_theme::title_bar_height(self.theme))
-            .frame(egui::Frame::none().fill(pml_theme::face(self.theme)))
-            .show(ctx, |ui| {
-                pml_theme::title_bar_with_icon(
-                    ui,
-                    self.theme,
-                    pml_config::BRAND_NAME,
-                    self.dog_texture.as_ref(),
-                );
-            });
 
         egui::TopBottomPanel::bottom("pml_bottom")
             .exact_height(84.0)
