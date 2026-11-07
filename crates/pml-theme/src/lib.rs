@@ -17,6 +17,19 @@ pub use pml_config::Theme;
 
 const UI_FONT_SIZE: f32 = 12.0;
 
+/// Builds a translucent Aero colour. [`Color32`] stores premultiplied alpha,
+/// while design values are written the intuitive unmultiplied way, so the
+/// channels are converted here. Kept `const` so the palette stays a `const`.
+const fn aero(r: u8, g: u8, b: u8, a: u8) -> Color32 {
+    let alpha = a as u32;
+    Color32::from_rgba_premultiplied(
+        ((r as u32 * alpha + 127) / 255) as u8,
+        ((g as u32 * alpha + 127) / 255) as u8,
+        ((b as u32 * alpha + 127) / 255) as u8,
+        a,
+    )
+}
+
 /// How a theme renders raised/sunken edges.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BevelStyle {
@@ -151,24 +164,28 @@ const WIN98: Palette = Palette {
 };
 
 const WIN7: Palette = Palette {
-    face: Color32::from_rgb(0xF0, 0xF0, 0xF0),
-    face_hover: Color32::from_rgb(0xEA, 0xF3, 0xFB),
-    face_pressed: Color32::from_rgb(0xD5, 0xE8, 0xF7),
-    panel: Color32::from_rgb(0xEA, 0xF3, 0xFA),
-    card: Color32::WHITE,
+    // Aero glass: every large surface is translucent so the DWM acrylic
+    // backdrop below the framebuffer shows through. Cards keep a higher alpha
+    // than the window tint, otherwise dark text over a dark desktop wallpaper
+    // would become unreadable.
+    face: aero(0xF0, 0xF0, 0xF0, 0xB4),
+    face_hover: aero(0xEA, 0xF3, 0xFB, 0xD2),
+    face_pressed: aero(0xD5, 0xE8, 0xF7, 0xE0),
+    panel: aero(0xEA, 0xF3, 0xFA, 0x99),
+    card: aero(0xFF, 0xFF, 0xFF, 0xD9),
     card_border: Color32::from_rgb(0xB7, 0xCF, 0xE3),
     card_rounding: 4.0,
     card_title: Color32::from_rgb(0x14, 0x39, 0x5C),
     card_title_bar: Color32::TRANSPARENT,
-    input: Color32::WHITE,
+    input: aero(0xFF, 0xFF, 0xFF, 0xEB),
     primary: Color32::from_rgb(0x3C, 0x7F, 0xB1),
     primary_hover: Color32::from_rgb(0x55, 0xA4, 0xDC),
     primary_pressed: Color32::from_rgb(0x2C, 0x6A, 0x99),
     primary_text: Color32::WHITE,
     layout: LayoutStyle::Aero,
-    button: Color32::from_rgb(0xF4, 0xF9, 0xFD),
-    button_hover: Color32::from_rgb(0xEA, 0xF6, 0xFD),
-    button_pressed: Color32::from_rgb(0xD2, 0xE9, 0xF9),
+    button: aero(0xF4, 0xF9, 0xFD, 0xC4),
+    button_hover: aero(0xEA, 0xF6, 0xFD, 0xDC),
+    button_pressed: aero(0xD2, 0xE9, 0xF9, 0xE6),
     button_border: Color32::from_rgb(0x8C, 0xA0, 0xB3),
     button_rounding: 3.0,
     button_gloss: true,
@@ -176,8 +193,8 @@ const WIN7: Palette = Palette {
     bevel_inner_light: Color32::from_rgb(0xE8, 0xF1, 0xF8),
     bevel_dark: Color32::from_rgb(0x9A, 0xA9, 0xB8),
     bevel_inner_dark: Color32::from_rgb(0xC7, 0xD5, 0xE2),
-    title_top: Color32::from_rgb(0xF6, 0xFB, 0xFF),
-    title_bottom: Color32::from_rgb(0xC9, 0xE7, 0xFA),
+    title_top: aero(0xF6, 0xFB, 0xFF, 0xCC),
+    title_bottom: aero(0xC9, 0xE7, 0xFA, 0x99),
     title_text: Color32::from_rgb(0x14, 0x39, 0x5C),
     title_rounding: 6.0,
     title_height: 26.0,
@@ -186,9 +203,9 @@ const WIN7: Palette = Palette {
     text_disabled: Color32::from_rgb(0x9A, 0x9A, 0x9A),
     selection: Color32::from_rgb(0x33, 0x99, 0xFF),
     selection_text: Color32::WHITE,
-    row_hover: Color32::from_rgb(0xEA, 0xF3, 0xFB),
-    well: Color32::WHITE,
-    track: Color32::from_rgb(0xC9, 0xD8, 0xE4),
+    row_hover: aero(0xEA, 0xF3, 0xFB, 0xB4),
+    well: aero(0xFF, 0xFF, 0xFF, 0xEB),
+    track: aero(0xC9, 0xD8, 0xE4, 0xD2),
     accent: Color32::from_rgb(0x3C, 0x7F, 0xB1),
     accent_hover: Color32::from_rgb(0x55, 0xA4, 0xDC),
     accent_pressed: Color32::from_rgb(0x2C, 0x6A, 0x99),
@@ -977,6 +994,13 @@ pub fn group_box<R>(
 
 /// Theme-aware caption strip used for the main window and internal panels.
 pub fn title_bar(ui: &mut egui::Ui, title: &str) {
+    title_bar_with_icon(ui, title, None);
+}
+
+/// Caption strip that shows the launcher mascot instead of the generic "O"
+/// badge. The icon is optional so internal panels and previews keep working
+/// without a texture.
+pub fn title_bar_with_icon(ui: &mut egui::Ui, title: &str, texture: Option<&egui::TextureHandle>) {
     let theme = current_theme();
     let p = palette(theme);
     let width = ui.available_width().max(32.0);
@@ -1002,8 +1026,13 @@ pub fn title_bar(ui: &mut egui::Ui, title: &str) {
                 [rect.right_top(), rect.right_bottom()],
                 Stroke::new(1.0_f32, p.bevel_dark),
             );
+            let icon_rect = Rect::from_center_size(
+                Pos2::new(rect.left() + 12.0, rect.center().y),
+                Vec2::splat(16.0),
+            );
+            let icon_drawn = paint_title_icon(painter, icon_rect, texture);
             painter.text(
-                rect.left_center() + Vec2::new(6.0, 0.0),
+                rect.left_center() + Vec2::new(if icon_drawn { 24.0 } else { 6.0 }, 0.0),
                 Align2::LEFT_CENTER,
                 title,
                 font(12.0),
@@ -1026,7 +1055,12 @@ pub fn title_bar(ui: &mut egui::Ui, title: &str) {
                 Stroke::new(1.0_f32, Color32::from_white_alpha(190)),
             );
             painter.rect_stroke(rect, rounding, Stroke::new(1.0_f32, p.title_border));
-            let pos = rect.left_center() + Vec2::new(8.0, 0.0);
+            let icon_rect = Rect::from_center_size(
+                Pos2::new(rect.left() + 19.0, rect.center().y),
+                Vec2::splat(20.0),
+            );
+            let icon_drawn = paint_title_icon(painter, icon_rect, texture);
+            let pos = rect.left_center() + Vec2::new(if icon_drawn { 34.0 } else { 8.0 }, 0.0);
             painter.text(
                 pos + Vec2::new(0.7, 0.7),
                 Align2::LEFT_CENTER,
@@ -1042,8 +1076,13 @@ pub fn title_bar(ui: &mut egui::Ui, title: &str) {
                 [rect.left_top(), rect.right_top()],
                 Stroke::new(1.0_f32, lighten(p.title_bottom, 0.18)),
             );
+            let icon_rect = Rect::from_center_size(
+                Pos2::new(rect.left() + 14.0, rect.center().y),
+                Vec2::splat(16.0),
+            );
+            let icon_drawn = paint_title_icon(painter, icon_rect, texture);
             painter.text(
-                rect.left_center() + Vec2::new(8.0, 0.0),
+                rect.left_center() + Vec2::new(if icon_drawn { 28.0 } else { 8.0 }, 0.0),
                 Align2::LEFT_CENTER,
                 title,
                 font(12.0),
@@ -1060,14 +1099,16 @@ pub fn title_bar(ui: &mut egui::Ui, title: &str) {
                 Pos2::new(rect.left() + 16.0, rect.center().y),
                 Vec2::splat(18.0),
             );
-            painter.rect_filled(icon, egui::Rounding::same(2.0), Color32::WHITE);
-            painter.text(
-                icon.center(),
-                Align2::CENTER_CENTER,
-                "O",
-                font(11.5),
-                p.title_bottom,
-            );
+            if !paint_title_icon(painter, icon, texture) {
+                painter.rect_filled(icon, egui::Rounding::same(2.0), Color32::WHITE);
+                painter.text(
+                    icon.center(),
+                    Align2::CENTER_CENTER,
+                    "O",
+                    font(11.5),
+                    p.title_bottom,
+                );
+            }
             painter.text(
                 rect.left_center() + Vec2::new(32.0, 0.0),
                 Align2::LEFT_CENTER,
@@ -1095,14 +1136,16 @@ pub fn title_bar(ui: &mut egui::Ui, title: &str) {
                 Pos2::new(rect.left() + 17.0, rect.center().y),
                 Vec2::splat(18.0),
             );
-            painter.rect_filled(icon, egui::Rounding::same(5.0), p.accent);
-            painter.text(
-                icon.center(),
-                Align2::CENTER_CENTER,
-                "O",
-                font(11.5),
-                Color32::WHITE,
-            );
+            if !paint_title_icon(painter, icon, texture) {
+                painter.rect_filled(icon, egui::Rounding::same(5.0), p.accent);
+                painter.text(
+                    icon.center(),
+                    Align2::CENTER_CENTER,
+                    "O",
+                    font(11.5),
+                    Color32::WHITE,
+                );
+            }
             painter.text(
                 rect.center(),
                 Align2::CENTER_CENTER,
@@ -1112,6 +1155,25 @@ pub fn title_bar(ui: &mut egui::Ui, title: &str) {
             );
         }
     }
+}
+
+/// Draws the mascot texture into `rect`. Returns `false` when no icon was
+/// supplied so the caller can fall back to the letter badge.
+fn paint_title_icon(
+    painter: &egui::Painter,
+    rect: Rect,
+    icon: Option<&egui::TextureHandle>,
+) -> bool {
+    let Some(texture) = icon else {
+        return false;
+    };
+    painter.image(
+        texture.id(),
+        rect,
+        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+        Color32::WHITE,
+    );
+    true
 }
 
 /// Trackbar/slider. Classic Windows 98 draws ticks and a raised thumb; modern
@@ -1398,6 +1460,197 @@ pub fn primary_button_sized(
 
 pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> Response {
     primary_button_sized(ui, text, None, enabled)
+}
+
+/// A water droplet used as the Windows 7 primary action.
+///
+/// Aero is all about glossy, translucent surfaces, so the main button becomes
+/// a literal drop of water: a sharp tip, a round refractive bulb, a bright rim
+/// and a glossy highlight. The caption sits in the widest part of the bulb.
+pub fn water_drop_button(
+    ui: &mut egui::Ui,
+    text: &str,
+    desired_size: Option<Vec2>,
+    enabled: bool,
+) -> Response {
+    let p = palette_now();
+    let size = desired_size.unwrap_or(Vec2::new(60.0, 64.0));
+    let sense = if enabled {
+        Sense::click()
+    } else {
+        Sense::hover()
+    };
+    let (rect, response) = ui.allocate_exact_size(size, sense);
+
+    let hovered = enabled && response.hovered();
+    let pressed = enabled && response.is_pointer_button_down_on();
+    let drop_rect = Rect::from_center_size(
+        rect.center() + Vec2::new(0.0, 1.0),
+        Vec2::new(rect.width() * 0.86, rect.height() * 0.92),
+    );
+    let points = droplet_points(drop_rect);
+    let painter = ui.painter();
+
+    if hovered {
+        // A soft halo reads as light refracting around the water.
+        let halo = Rect::from_center_size(drop_rect.center(), drop_rect.size() * 1.12);
+        painter.add(egui::Shape::convex_polygon(
+            droplet_points(halo),
+            Color32::from_rgba_unmultiplied(150, 215, 255, 34),
+            Stroke::NONE,
+        ));
+    }
+
+    let (top, bottom) = if !enabled {
+        (
+            Color32::from_rgb(0xC9, 0xD4, 0xDC),
+            Color32::from_rgb(0xA8, 0xB6, 0xC2),
+        )
+    } else if pressed {
+        (
+            Color32::from_rgb(0x2C, 0x86, 0xC8),
+            Color32::from_rgb(0x12, 0x58, 0x92),
+        )
+    } else if hovered {
+        (
+            Color32::from_rgb(0x9B, 0xE2, 0xFF),
+            Color32::from_rgb(0x2A, 0x8F, 0xD8),
+        )
+    } else {
+        (
+            Color32::from_rgb(0x7F, 0xD4, 0xFF),
+            Color32::from_rgb(0x1B, 0x74, 0xB8),
+        )
+    };
+
+    // A triangle fan with per-vertex colours gives the bulb a smooth watery
+    // gradient without shaders.
+    let mut mesh = egui::epaint::Mesh::default();
+    let center = drop_rect.center() + Vec2::new(0.0, drop_rect.height() * 0.12);
+    mesh.colored_vertex(center, mix(top, bottom, 0.55));
+    for point in &points {
+        let t = ((point.y - drop_rect.top()) / drop_rect.height()).clamp(0.0, 1.0);
+        mesh.colored_vertex(*point, mix(top, bottom, t));
+    }
+    for index in 0..points.len() {
+        let a = 1 + index as u32;
+        let b = 1 + ((index + 1) % points.len()) as u32;
+        mesh.add_triangle(0, a, b);
+    }
+    painter.add(egui::Shape::mesh(mesh));
+
+    // Bright rim along the silhouette.
+    painter.add(egui::Shape::closed_line(
+        points,
+        Stroke::new(
+            1.2_f32,
+            Color32::from_rgba_unmultiplied(255, 255, 255, if enabled { 175 } else { 90 }),
+        ),
+    ));
+
+    // Glossy reflection: a big soft blob and a tiny sharp sparkle.
+    if enabled {
+        let highlight_center =
+            drop_rect.center() + Vec2::new(-drop_rect.width() * 0.17, -drop_rect.height() * 0.10);
+        painter.add(egui::Shape::ellipse_filled(
+            highlight_center,
+            Vec2::new(drop_rect.width() * 0.17, drop_rect.height() * 0.15),
+            Color32::from_white_alpha(115),
+        ));
+        painter.add(egui::Shape::ellipse_filled(
+            highlight_center + Vec2::new(3.0, 4.0),
+            Vec2::new(drop_rect.width() * 0.06, drop_rect.height() * 0.055),
+            Color32::from_white_alpha(220),
+        ));
+    }
+
+    let label_pos = drop_rect.center() + Vec2::new(0.0, drop_rect.height() * 0.16);
+    let label_color = if enabled {
+        p.primary_text
+    } else {
+        Color32::from_rgb(0x5A, 0x66, 0x70)
+    };
+    painter.text(
+        label_pos + Vec2::new(0.7, 0.7),
+        Align2::CENTER_CENTER,
+        text,
+        font(11.5),
+        Color32::from_black_alpha(70),
+    );
+    painter.text(
+        label_pos,
+        Align2::CENTER_CENTER,
+        text,
+        font(11.5),
+        label_color,
+    );
+
+    if enabled && hovered {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+    }
+    response
+}
+
+/// Samples the outline of a teardrop in unit space scaled into `rect`.
+/// The tip is at the top centre and the round bulb fills the bottom.
+fn droplet_points(rect: Rect) -> Vec<Pos2> {
+    let map = |x: f32, y: f32| {
+        Pos2::new(
+            rect.left() + x * rect.width(),
+            rect.top() + y * rect.height(),
+        )
+    };
+    let mut points = Vec::with_capacity(48);
+    // Right flank: tip -> widest point.
+    sample_cubic(
+        &mut points,
+        map(0.5, 0.0),
+        map(0.66, 0.18),
+        map(1.0, 0.42),
+        map(1.0, 0.66),
+        10,
+    );
+    // Bulb: right -> bottom -> left.
+    sample_cubic(
+        &mut points,
+        map(1.0, 0.66),
+        map(1.0, 0.87),
+        map(0.78, 1.0),
+        map(0.5, 1.0),
+        10,
+    );
+    sample_cubic(
+        &mut points,
+        map(0.5, 1.0),
+        map(0.22, 1.0),
+        map(0.0, 0.87),
+        map(0.0, 0.66),
+        10,
+    );
+    // Left flank: bulb -> tip.
+    sample_cubic(
+        &mut points,
+        map(0.0, 0.66),
+        map(0.0, 0.42),
+        map(0.34, 0.18),
+        map(0.5, 0.0),
+        10,
+    );
+    points
+}
+
+/// Pushes `steps` points of a cubic Bézier, excluding the start point so
+/// consecutive segments chain without duplicates.
+fn sample_cubic(out: &mut Vec<Pos2>, p0: Pos2, p1: Pos2, p2: Pos2, p3: Pos2, steps: usize) {
+    for step in 1..=steps {
+        let t = step as f32 / steps as f32;
+        let u = 1.0 - t;
+        let x =
+            u * u * u * p0.x + 3.0 * u * u * t * p1.x + 3.0 * u * t * t * p2.x + t * t * t * p3.x;
+        let y =
+            u * u * u * p0.y + 3.0 * u * u * t * p1.y + 3.0 * u * t * t * p2.y + t * t * t * p3.y;
+        out.push(Pos2::new(x, y));
+    }
 }
 
 fn draw_check(painter: &egui::Painter, rect: Rect, color: Color32, width: f32) {

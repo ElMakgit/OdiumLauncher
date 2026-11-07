@@ -2385,6 +2385,7 @@ dependencies = [
  "pml-modpack",
  "pml-publish",
  "pml-theme",
+ "raw-window-handle",
  "rfd",
  "serde_json",
  "thiserror 2.0.21",
