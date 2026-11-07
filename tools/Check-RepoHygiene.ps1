@@ -12,8 +12,13 @@
 #>
 $ErrorActionPreference = 'Stop'
 
-$root = (& git rev-parse --show-toplevel).Trim()
-if (-not $root) { throw 'not inside a git repository' }
+# Resolve the repository root from the script location so the check works
+# regardless of the caller's current directory (CI, scheduled task, editor).
+$root = (Get-Item -LiteralPath (Join-Path $PSScriptRoot '..')).FullName
+$ErrorActionPreference = 'Continue'
+$inside = ("$((& git -C $root rev-parse --is-inside-work-tree 2>$null) -join '')").Trim()
+$ErrorActionPreference = 'Stop'
+if ($inside -ne 'true') { throw 'not inside a git repository' }
 
 $tracked = @(& git -C $root -c core.quotePath=false ls-files)
 $failures = [System.Collections.Generic.List[string]]::new()
