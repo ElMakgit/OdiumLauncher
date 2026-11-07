@@ -17,7 +17,9 @@ use pml_java::{ensure_java, JavaInstallation};
 use pml_launcher::{spawn_game, LaunchSpec};
 use pml_loader::LoaderInstaller;
 use pml_minecraft::{LaunchRequest, Minecraft, UserProfile};
-use pml_modpack::{extract_overrides, load_pack, Manifest, ModpackSync, SyncRequest};
+use pml_modpack::{
+    extract_overrides_when_changed, load_pack, normalize_path, Manifest, ModpackSync, SyncRequest,
+};
 use tokio::sync::mpsc;
 
 pub(super) const CANCELLED: &str = "Отменено";
@@ -108,7 +110,12 @@ pub(super) async fn run_pipeline(
 
     tx.send(UiEvent::Stage("Поиск Java 21…".to_owned())).ok();
     let java = tokio::select! {
-        result = ensure_java(&paths, &downloader, Some(download_tx.clone())) => {
+        result = ensure_java(
+            &paths,
+            &downloader,
+            Some(download_tx.clone()),
+            Some(Arc::clone(&cancel)),
+        ) => {
             stage_result(result, &cancel, "Java")?
         }
         _ = wait_for_cancel(&cancel) => return Err(CANCELLED.to_owned()),
@@ -130,6 +137,7 @@ pub(super) async fn run_pipeline(
                 &manifest.loader,
                 &java.java_exe,
                 Some(download_tx.clone()),
+                Some(Arc::clone(&cancel)),
             )
             .await,
         &cancel,
@@ -170,16 +178,30 @@ pub(super) async fn run_pipeline(
     if let Some(archive) = pack.mrpack {
         tx.send(UiEvent::Stage("Распаковка overrides…".to_owned()))
             .ok();
-        let instance = instance_dir.clone();
-        let extracted = tokio::task::spawn_blocking(move || extract_overrides(&archive, &instance))
-            .await
-            .map_err(|error| format!("Распаковка overrides: {error}"))
-            .and_then(|result| result.map_err(|error| format!("Распаковка overrides: {error}")));
+        // Overrides never own a path that the delta sync manages: otherwise a
+        // disabled optional mod or a stale jar would be resurrected from the zip.
+        let managed = manifest
+            .files
+            .iter()
+            .chain(manifest.optional_files.iter())
+            .map(|file| normalize_path(&file.path))
+            .collect::<std::collections::BTreeSet<_>>();
+        // Reapplies only when the archive fingerprint changed, so user-edited
+        // configs survive ordinary launches and the cancellation token reaches
+        // the blocking extraction loop.
+        let extracted = extract_overrides_when_changed(
+            &archive,
+            &instance_dir,
+            &managed,
+            Some(Arc::clone(&cancel)),
+        )
+        .await;
         let written = stage_result(extracted, &cancel, "Распаковка overrides")?;
-        tx.send(UiEvent::Sync(format!(
-            "Overrides: {written} файлов распаковано"
-        )))
-        .ok();
+        let message = match written {
+            Some(written) => format!("Overrides: {written} файлов распаковано"),
+            None => "Overrides: уже применены".to_owned(),
+        };
+        tx.send(UiEvent::Sync(message)).ok();
         check_cancel()?;
     }
 

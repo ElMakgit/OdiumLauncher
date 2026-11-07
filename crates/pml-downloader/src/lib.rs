@@ -461,6 +461,39 @@ impl Downloader {
         {
             return Err(DownloadError::Cancelled);
         }
+
+        // Minecraft's asset index routinely maps several logical names (for
+        // example two sounds) to the same object hash. Without deduplication
+        // two workers write the same `.part` file and race on the final
+        // rename: one succeeds, the other removes the freshly installed file
+        // and fails with `os error 2`. Collapse identical destinations before
+        // spawning workers. A conflicting digest for one destination is a
+        // manifest bug, not something to guess about.
+        let mut unique: Vec<DownloadTask> = Vec::with_capacity(tasks.len());
+        let mut seen: std::collections::HashMap<PathBuf, (String, Option<u64>)> =
+            std::collections::HashMap::with_capacity(tasks.len());
+        let mut duplicates = 0usize;
+        for task in tasks {
+            let key = task.dest.clone();
+            let sha = task.sha.clone().unwrap_or_default();
+            if let Some((known_sha, known_size)) = seen.get(&key) {
+                if *known_sha != sha || *known_size != task.size {
+                    tracing::warn!(
+                        path = %task.dest.display(),
+                        label = %task.label,
+                        "ignoring a duplicate download task with a conflicting digest"
+                    );
+                }
+                duplicates += 1;
+                continue;
+            }
+            seen.insert(key, (sha, task.size));
+            unique.push(task);
+        }
+        if duplicates > 0 {
+            tracing::debug!(duplicates, "collapsed duplicate download destinations");
+        }
+        let tasks = unique;
         let total_files = tasks.len();
         let overall_total = tasks.iter().filter_map(|task| task.size).sum::<u64>();
         let overall_done = Arc::new(AtomicU64::new(0));
@@ -914,14 +947,45 @@ impl Downloader {
             }
         }
 
-        if let Err(source) = tokio::fs::rename(&part, &task.dest).await {
-            // Windows normally replaces on rename. If an antivirus or a stale
-            // handle blocks it, remove the destination and retry once.
-            tracing::debug!(path = %task.dest.display(), %source, "rename failed, retrying after remove");
-            let _ = tokio::fs::remove_file(&task.dest).await;
-            tokio::fs::rename(&part, &task.dest)
-                .await
-                .map_err(|source| io_error(&task.dest, source))?;
+        if let Err(mut source) = tokio::fs::rename(&part, &task.dest).await {
+            // A concurrent worker (an identical asset object referenced under
+            // two names, or two batches sharing one destination) may have
+            // completed the same file between our flush and this rename. In
+            // that case the verified destination is just as good as ours;
+            // never delete it, because the other worker already reported
+            // success and Minecraft will later read exactly this path.
+            if destination_matches(task).await {
+                tracing::debug!(
+                    path = %task.dest.display(),
+                    "destination was completed by a concurrent download"
+                );
+                return Ok(FileOutcome {
+                    skipped: false,
+                    bytes: downloaded,
+                });
+            }
+            // Windows normally replaces on rename; antivirus scanners can hold
+            // the file for a few hundred milliseconds. Retry without ever
+            // removing the destination, which may be a valid copy.
+            for attempt in 0..4 {
+                tokio::time::sleep(Duration::from_millis(50 * (attempt + 1))).await;
+                match tokio::fs::rename(&part, &task.dest).await {
+                    Ok(()) => {
+                        return Ok(FileOutcome {
+                            skipped: false,
+                            bytes: downloaded,
+                        })
+                    }
+                    Err(error) => source = error,
+                }
+                if destination_matches(task).await {
+                    return Ok(FileOutcome {
+                        skipped: false,
+                        bytes: downloaded,
+                    });
+                }
+            }
+            return Err(io_error(&task.dest, source));
         }
 
         Ok(FileOutcome {
@@ -1035,6 +1099,25 @@ pub fn part_path(dest: &Path) -> PathBuf {
     dest.with_file_name(name)
 }
 
+/// True when `task.dest` is already the complete, verified file this task
+/// would have produced. Used only to resolve cross-worker rename races.
+async fn destination_matches(task: &DownloadTask) -> bool {
+    let Ok(metadata) = tokio::fs::metadata(&task.dest).await else {
+        return false;
+    };
+    if let Some(expected) = task.size.filter(|size| *size > 0) {
+        if metadata.len() != expected {
+            return false;
+        }
+    }
+    match task.sha.as_deref().filter(|sha| !sha.is_empty()) {
+        Some(expected) => verify_hash(&task.dest, expected, task.algo)
+            .await
+            .unwrap_or(false),
+        None => metadata.is_file(),
+    }
+}
+
 pub async fn verify_hash(
     path: &Path,
     expected: &str,
@@ -1085,6 +1168,17 @@ pub fn hash_bytes(algo: HashAlgo, bytes: &[u8]) -> String {
 /// and reject Unix symlink entries. This function is blocking and must be called
 /// from `tokio::task::spawn_blocking` when used in async code.
 pub fn safe_extract_zip(zip_path: &Path, dest: &Path) -> Result<Vec<PathBuf>, DownloadError> {
+    safe_extract_zip_with_cancel(zip_path, dest, None)
+}
+
+/// Same as [`safe_extract_zip`], but checks `cancel` before every archive
+/// entry so a large runtime extraction stops promptly instead of keeping the
+/// UI on "Отмена…" until the whole zip is on disk.
+pub fn safe_extract_zip_with_cancel(
+    zip_path: &Path,
+    dest: &Path,
+    cancel: Option<&AtomicBool>,
+) -> Result<Vec<PathBuf>, DownloadError> {
     std::fs::create_dir_all(dest).map_err(|source| io_error(dest, source))?;
     let dest_canonical = dest
         .canonicalize()
@@ -1097,6 +1191,9 @@ pub fn safe_extract_zip(zip_path: &Path, dest: &Path) -> Result<Vec<PathBuf>, Do
 
     let mut extracted = Vec::new();
     for index in 0..archive.len() {
+        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Err(DownloadError::Cancelled);
+        }
         let mut entry = archive
             .by_index(index)
             .map_err(|source| DownloadError::Zip {
@@ -1333,6 +1430,39 @@ mod tests {
         assert_eq!(second.skipped, 1);
         assert_eq!(second.downloaded, 0);
         server.await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn duplicate_destinations_do_not_race_on_the_part_file(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let source = dir.path().join("orb.ogg");
+        let body = b"two asset names, one object".repeat(4096);
+        tokio::fs::write(&source, &body).await?;
+        let dest = dir.path().join("assets").join("objects").join("ab").join("hash");
+        let url = reqwest::Url::from_file_path(&source)
+            .expect("file url")
+            .to_string();
+        let task = DownloadTask::new(
+            url,
+            dest.clone(),
+            Some(hash_bytes(HashAlgo::Sha256, &body)),
+            HashAlgo::Sha256,
+            Some(body.len() as u64),
+            "shared asset",
+        );
+
+        // Minecraft's asset index lists several names for one hash. Before
+        // deduplication the second worker renamed the same `.part` and the
+        // loser deleted the winner's file, producing `os error 2`.
+        let summary = Downloader::new(4)?
+            .download_many(vec![task.clone(), task], None)
+            .await?;
+        assert_eq!(summary.total_files, 1);
+        assert_eq!(summary.downloaded, 1);
+        assert_eq!(tokio::fs::read(&dest).await?, body);
+        assert!(!part_path(&dest).exists());
         Ok(())
     }
 

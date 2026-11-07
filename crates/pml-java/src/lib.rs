@@ -9,17 +9,40 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use pml_config::{save_json_atomic, PortablePaths};
-use pml_downloader::{safe_extract_zip, DownloadEvent, DownloadTask, Downloader, HashAlgo};
+use pml_downloader::{
+    safe_extract_zip_with_cancel, DownloadEvent, DownloadTask, Downloader, HashAlgo,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::task::JoinSet;
 
 pub const MIN_JAVA_MAJOR: u32 = 21;
-pub const ADOPTIUM_LATEST_21: &str = "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture=x64&image_type=jdk&os=windows&vendor=eclipse";
+
+/// Adoptium download endpoint for the current OS and 64-bit architecture.
+/// Minecraft 1.21 does not run on a 32-bit JVM, so x86 is never requested.
+pub fn adoptium_latest_url() -> String {
+    let os = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "mac"
+    } else {
+        "linux"
+    };
+    let architecture = if cfg!(target_arch = "aarch64") {
+        "aarch64"
+    } else {
+        "x64"
+    };
+    format!(
+        "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture={architecture}&image_type=jdk&os={os}&vendor=eclipse"
+    )
+}
 
 /// How an installation was found. Cached entries are re-probed on every run,
 /// so a deleted runtime is never trusted just because it is in the cache.
@@ -54,19 +77,18 @@ pub struct JavaInstallation {
     pub major: u32,
     /// Version string exactly as reported by `java -version`.
     pub version: String,
+    /// `os.arch` width reported by the JVM: 32, 64, or 0 when unknown.
+    #[serde(default)]
+    pub bits: u32,
     pub origin: JavaOrigin,
-}
-
-impl JavaInstallation {
-    pub fn bin_dir(&self) -> &Path {
-        self.home.as_path()
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct JavaProbe {
     pub version: String,
     pub major: u32,
+    /// 32, 64, or 0 when the JVM did not report `os.arch`.
+    pub bits: u32,
 }
 
 #[derive(Debug, Error)]
@@ -97,6 +119,8 @@ pub enum JavaError {
     },
     #[error("некорректный ответ Adoptium: {0}")]
     Adoptium(String),
+    #[error("загрузка Java отменена")]
+    Cancelled,
     #[error("в архиве Java не найден bin/java.exe")]
     MissingExecutable,
 }
@@ -139,9 +163,11 @@ struct AdoptiumVersion {
 /// `java version "1.8.0_401"` -> `1.8.0_401` / 8
 /// `openjdk version "25" 2025-09-16` -> `25` / 25
 pub fn parse_java_version(output: &str) -> Option<JavaProbe> {
+    // `-XshowSettings:properties` also prints `java.version = 21.0.5` before
+    // the human-readable line, so require a quoted token to skip it.
     let line = output
         .lines()
-        .find(|line| line.to_ascii_lowercase().contains("version"))?;
+        .find(|line| line.to_ascii_lowercase().contains("version") && line.contains('"'))?;
     let start = line.find('"')? + 1;
     let end = line[start..].find('"')? + start;
     let version = line[start..end].trim().to_owned();
@@ -156,12 +182,35 @@ pub fn parse_java_version(output: &str) -> Option<JavaProbe> {
     } else {
         first.parse::<u32>().ok()?
     };
-    Some(JavaProbe { version, major })
+    Some(JavaProbe {
+        version,
+        major,
+        bits: 0,
+    })
+}
+
+/// Reads the JVM's `os.arch` property emitted by `-XshowSettings:properties`.
+/// 32-bit runtimes cannot use the 4 GiB heap configured for Minecraft 1.21.
+fn parse_arch_bits(output: &str) -> Option<u32> {
+    let arch = output.lines().find_map(|line| {
+        let (key, value) = line.split_once('=')?;
+        key.trim()
+            .eq_ignore_ascii_case("os.arch")
+            .then(|| value.trim().to_ascii_lowercase())
+    })?;
+    match arch.as_str() {
+        "x86" | "i386" | "i486" | "i586" | "i686" | "x86_32" | "arm" => Some(32),
+        "amd64" | "x86_64" | "aarch64" | "arm64" | "ppc64" | "ppc64le" | "s390x" | "riscv64" => {
+            Some(64)
+        }
+        _ => None,
+    }
 }
 
 async fn probe_java(java_exe: &Path) -> Result<JavaProbe, JavaError> {
     let mut command = tokio::process::Command::new(java_exe);
     command
+        .arg("-XshowSettings:properties")
         .arg("-version")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -187,7 +236,12 @@ async fn probe_java(java_exe: &Path) -> Result<JavaProbe, JavaError> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    parse_java_version(&text).ok_or_else(|| JavaError::BadVersion(java_exe.to_path_buf()))
+    parse_java_version(&text).ok_or_else(|| JavaError::BadVersion(java_exe.to_path_buf())).map(
+        |mut probe| {
+            probe.bits = parse_arch_bits(&text).unwrap_or(0);
+            probe
+        },
+    )
 }
 
 /// Probes every plausible candidate concurrently. Broken shortcuts and stale
@@ -212,6 +266,7 @@ pub async fn discover_all(paths: &PortablePaths) -> Vec<JavaInstallation> {
                 home,
                 major: probe.major,
                 version: probe.version,
+                bits: probe.bits,
                 origin,
             })
         });
@@ -234,7 +289,10 @@ pub async fn discover_all(paths: &PortablePaths) -> Vec<JavaInstallation> {
 pub fn select_best(installations: &[JavaInstallation]) -> Option<JavaInstallation> {
     installations
         .iter()
-        .filter(|installation| installation.major >= MIN_JAVA_MAJOR)
+        // A 32-bit JVM cannot honour -Xmx4096M; probing rejects it early with
+        // a clear reason instead of a cryptic game crash later. `bits == 0`
+        // means the JVM did not report os.arch and is kept for compatibility.
+        .filter(|installation| installation.major >= MIN_JAVA_MAJOR && installation.bits != 32)
         .min_by_key(|installation| (installation.major != MIN_JAVA_MAJOR, installation.major))
         .cloned()
 }
@@ -286,7 +344,15 @@ fn collect_candidates(paths: &PortablePaths) -> Vec<(PathBuf, JavaOrigin)> {
                     .and_then(Path::file_name)
                     .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
             {
-                push(entry.into_path(), JavaOrigin::Common);
+                let is_downloaded = entry.path().starts_with(paths.java_dir().join("temurin-21"));
+                push(
+                    entry.into_path(),
+                    if is_downloaded {
+                        JavaOrigin::Downloaded
+                    } else {
+                        JavaOrigin::Common
+                    },
+                );
             }
         }
     }
@@ -306,13 +372,16 @@ fn collect_candidates(paths: &PortablePaths) -> Vec<(PathBuf, JavaOrigin)> {
     candidates
 }
 
+#[cfg(windows)]
 fn common_java_roots() -> Vec<PathBuf> {
     let mut roots = Vec::new();
-    let mut bases = vec![
-        PathBuf::from(r"C:\Program Files"),
-        PathBuf::from(r"C:\Program Files (x86)"),
-    ];
-    if let Some(local) = std::env::var_os("LOCALAPPDATA") {
+    let mut bases = Vec::new();
+    for variable in ["ProgramFiles", "ProgramFiles(x86)"] {
+        if let Some(value) = std::env::var_os(variable).filter(|value| !value.is_empty()) {
+            bases.push(PathBuf::from(value));
+        }
+    }
+    if let Some(local) = std::env::var_os("LOCALAPPDATA").filter(|value| !value.is_empty()) {
         bases.push(PathBuf::from(local).join("Programs"));
     }
     let vendors = [
@@ -333,6 +402,15 @@ fn common_java_roots() -> Vec<PathBuf> {
         }
     }
     roots
+}
+
+#[cfg(not(windows))]
+fn common_java_roots() -> Vec<PathBuf> {
+    vec![
+        PathBuf::from("/usr/lib/jvm"),
+        PathBuf::from("/usr/java"),
+        PathBuf::from("/Library/Java/JavaVirtualMachines"),
+    ]
 }
 
 fn java_exe_name() -> &'static str {
@@ -363,6 +441,7 @@ pub async fn ensure_java(
     paths: &PortablePaths,
     downloader: &Downloader,
     progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<JavaInstallation, JavaError> {
     let installations = discover_all(paths).await;
     if let Some(best) = select_best(&installations) {
@@ -378,27 +457,31 @@ pub async fn ensure_java(
         return Ok(best);
     }
 
-    download_temurin_21(paths, downloader, progress).await
+    download_temurin_21(paths, downloader, progress, cancel).await
 }
 
 async fn download_temurin_21(
     paths: &PortablePaths,
     downloader: &Downloader,
     progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
+    cancel: Option<Arc<AtomicBool>>,
 ) -> Result<JavaInstallation, JavaError> {
     tracing::info!("no Java 21+ found, downloading Eclipse Temurin 21");
     let response = downloader
         .client()
-        .get(ADOPTIUM_LATEST_21)
+        .get(adoptium_latest_url())
         .send()
         .await?
         .error_for_status()?
         .json::<Vec<AdoptiumAsset>>()
         .await?;
 
+    // The endpoint may return several builds (for example a point release per
+    // vendor); take the newest numeric version instead of the first array item.
     let asset = response
         .into_iter()
-        .find(|asset| !asset.binary.package.link.trim().is_empty())
+        .filter(|asset| !asset.binary.package.link.trim().is_empty())
+        .max_by_key(asset_version_key)
         .ok_or_else(|| JavaError::Adoptium("пустой список ассетов".to_owned()))?;
     let package = asset.binary.package;
     let archive_name = package
@@ -426,6 +509,12 @@ async fn download_temurin_21(
     let java_exe = match existing {
         Some(path) => path,
         None => {
+            if cancel
+                .as_ref()
+                .is_some_and(|flag| flag.load(Ordering::Relaxed))
+            {
+                return Err(JavaError::Cancelled);
+            }
             tokio::fs::create_dir_all(&extract_dir)
                 .await
                 .map_err(|source| JavaError::Io {
@@ -434,9 +523,12 @@ async fn download_temurin_21(
                 })?;
             let zip = archive.clone();
             let dest = extract_dir.clone();
-            tokio::task::spawn_blocking(move || safe_extract_zip(&zip, &dest))
-                .await
-                .map_err(|error| JavaError::Adoptium(format!("extract task failed: {error}")))??;
+            let cancel_for_extract = cancel.clone();
+            tokio::task::spawn_blocking(move || {
+                safe_extract_zip_with_cancel(&zip, &dest, cancel_for_extract.as_deref())
+            })
+            .await
+            .map_err(|error| JavaError::Adoptium(format!("extract task failed: {error}")))??;
             find_java_executable(&extract_dir).ok_or(JavaError::MissingExecutable)?
         }
     };
@@ -463,6 +555,7 @@ async fn download_temurin_21(
             .filter(|name| !name.trim().is_empty())
             .or_else(|| asset.version.and_then(|version| version.semver))
             .unwrap_or_else(|| probe.version.clone()),
+        bits: probe.bits,
         origin: JavaOrigin::Downloaded,
     };
     save_cache(paths, &installation)?;
@@ -479,8 +572,22 @@ async fn download_temurin_21(
     Ok(installation)
 }
 
-fn find_java_executable(root: &Path) -> Option<PathBuf> {
-    if !root.is_dir() {
+/// Numeric release key used to pick the newest Adoptium build from the API's
+/// (unordered) asset list: `21.0.10` must beat `21.0.9`.
+fn asset_version_key(asset: &AdoptiumAsset) -> Vec<u32> {
+    let text = asset
+        .version
+        .as_ref()
+        .and_then(|version| version.semver.as_deref())
+        .or(asset.release_name.as_deref())
+        .unwrap_or_default();
+    text.split(|character: char| !character.is_ascii_digit())
+        .filter(|part| !part.is_empty())
+        .filter_map(|part| part.parse::<u32>().ok())
+        .collect()
+}
+
+fn find_java_executable(root: &Path) -> Option<PathBuf> {    if !root.is_dir() {
         return None;
     }
     walkdir::WalkDir::new(root)
@@ -572,6 +679,7 @@ mod tests {
             home: PathBuf::from("."),
             major,
             version: major.to_string(),
+            bits: 64,
             origin: JavaOrigin::Common,
         };
         let installations = vec![make(25, "a"), make(17, "b"), make(21, "c"), make(22, "d")];
@@ -579,11 +687,43 @@ mod tests {
         assert_eq!(best.major, 21);
         assert_eq!(best.java_exe, PathBuf::from("c"));
 
+        // A 32-bit JVM is unusable with the default 4 GiB heap, even when its
+        // version would otherwise win.
+        let mut x86 = make(21, "x86");
+        x86.bits = 32;
+        assert!(select_best(&[x86, make(22, "d")]).is_some_and(|best| best.major == 22));
+
         let installations = vec![make(25, "a"), make(22, "d")];
         assert_eq!(select_best(&installations).map(|i| i.major), Some(22));
 
         let installations = vec![make(17, "b"), make(8, "e")];
         assert!(select_best(&installations).is_none());
+    }
+
+    #[test]
+    fn parses_arch_from_show_settings() {
+        assert_eq!(
+            parse_arch_bits("    os.arch = amd64\n    java.version = 21.0.5\n"),
+            Some(64)
+        );
+        assert_eq!(parse_arch_bits("os.arch = x86\n"), Some(32));
+        assert_eq!(parse_arch_bits("os.arch = aarch64\n"), Some(64));
+        assert_eq!(parse_arch_bits("no properties"), None);
+    }
+
+    #[test]
+    fn adoptium_url_matches_the_current_platform() {
+        let url = adoptium_latest_url();
+        assert!(url.contains("image_type=jdk"));
+        assert!(url.contains("vendor=eclipse"));
+        if cfg!(windows) {
+            assert!(url.contains("os=windows"));
+        }
+        if cfg!(target_arch = "aarch64") {
+            assert!(url.contains("architecture=aarch64"));
+        } else {
+            assert!(url.contains("architecture=x64"));
+        }
     }
 
     #[test]

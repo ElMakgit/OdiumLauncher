@@ -9,14 +9,16 @@
 //! delta sync, optional-mod handling and loader provisioning are shared with
 //! hand-written manifests.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use futures_util::StreamExt;
-use pml_config::{LoaderKind, LoaderSpec};
+use pml_config::{save_json_atomic, LoaderKind, LoaderSpec};
 use pml_downloader::{hash_bytes, is_safe_relative, HashAlgo};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt as _;
 
 use crate::{Manifest, ManifestFile, ModpackError, MANIFEST_SCHEMA_VERSION};
@@ -27,6 +29,8 @@ const OVERRIDE_PREFIXES: [&str; 2] = ["overrides/", "client-overrides/"];
 /// either corrupt or hostile; refusing early beats filling the disk.
 pub const MAX_OVERRIDE_BYTES: u64 = 1024 * 1024 * 1024;
 pub const MAX_OVERRIDE_FILES: usize = 20_000;
+/// Instance file that remembers which overrides snapshot was already applied.
+pub const OVERRIDES_STATE_FILE: &str = ".pml_overrides_state.json";
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct MrpackIndex {
@@ -113,22 +117,33 @@ impl MrpackIndex {
         let mc_version = self.mc_version()?.to_owned();
         let loader = self.loader()?;
         let mut files = Vec::new();
+        let mut optional_files = Vec::new();
         for file in &self.files {
-            // Server-only entries must not be installed on a client.
-            if file.env.get("client").map(String::as_str) == Some("unsupported") {
+            // Server-side env also gates entry: server-only files must never
+            // end up in a client instance.
+            let client_env = file.env.get("client").map(String::as_str);
+            if client_env == Some("unsupported") {
                 continue;
             }
             let url = file.downloads.first().ok_or_else(|| {
                 ModpackError::Validation(format!("у файла {} нет ссылки на скачивание", file.path))
             })?;
-            files.push(ManifestFile {
+            let entry = ManifestFile {
                 path: file.path.clone(),
                 url: url.clone(),
                 sha256: file.hashes.get("sha256").cloned().unwrap_or_default(),
                 sha512: file.hashes.get("sha512").cloned().unwrap_or_default(),
                 sha1: file.hashes.get("sha1").cloned().unwrap_or_default(),
                 size: file.file_size,
-            });
+            };
+            // `env: {"client": "optional"}` is Modrinth's contract for "install
+            // on the client, but let the user turn it off". Placing those into
+            // `optional_files` routes them through the delta sync and honours
+            // the UI switch instead of force-installing them every launch.
+            match client_env {
+                Some("optional") => optional_files.push(entry),
+                _ => files.push(entry),
+            }
         }
         let manifest = Manifest {
             schema_version: MANIFEST_SCHEMA_VERSION,
@@ -142,7 +157,7 @@ impl MrpackIndex {
             loader,
             server: None,
             files,
-            optional_files: Vec::new(),
+            optional_files,
         };
         manifest.validate()?;
         Ok(manifest)
@@ -360,16 +375,23 @@ pub fn extract_overrides(archive: &Path, instance_dir: &Path) -> Result<usize, M
         instance_dir,
         MAX_OVERRIDE_BYTES,
         MAX_OVERRIDE_FILES,
+        &BTreeSet::new(),
+        None,
     )
 }
 
 /// Same as [`extract_overrides`] with explicit caps, which also makes the
-/// limits testable without building a gigabyte archive.
+/// limits testable without building a gigabyte archive. `managed` lists the
+/// normalized manifest paths owned by the delta sync: such entries are skipped
+/// because the sync already hash-verifies them, and blindly re-extracting
+/// would resurrect disabled optional mods on every launch.
 pub fn extract_overrides_with_limits(
     archive: &Path,
     instance_dir: &Path,
     max_bytes: u64,
     max_files: usize,
+    managed: &BTreeSet<String>,
+    cancel: Option<&AtomicBool>,
 ) -> Result<usize, ModpackError> {
     std::fs::create_dir_all(instance_dir).map_err(|source| ModpackError::Io {
         path: instance_dir.to_path_buf(),
@@ -391,6 +413,9 @@ pub fn extract_overrides_with_limits(
     let mut written = 0;
     let mut total_bytes: u64 = 0;
     for index in 0..zip.len() {
+        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+            return Err(ModpackError::Cancelled);
+        }
         let mut entry = zip.by_index(index).map_err(|error| {
             ModpackError::Validation(format!("не удалось прочитать файл архива: {error}"))
         })?;
@@ -414,6 +439,9 @@ pub fn extract_overrides_with_limits(
         }
         if !is_safe_relative(Path::new(relative)) {
             return Err(ModpackError::UnsafePath(relative.to_owned()));
+        }
+        if managed.contains(&crate::normalize_path(relative)) {
+            continue;
         }
         if written >= max_files {
             return Err(ModpackError::Validation(format!(
@@ -451,12 +479,87 @@ pub fn extract_overrides_with_limits(
             source,
         })?;
         output.flush().map_err(|source| ModpackError::Io {
-            path: destination,
             source,
+            path: destination,
         })?;
         written += 1;
     }
     Ok(written)
+}
+
+/// Which overrides snapshot the instance currently holds.
+#[derive(Debug, Serialize, Deserialize)]
+struct OverridesState {
+    #[serde(default = "crate::default_schema_version")]
+    schema_version: u32,
+    #[serde(default)]
+    archive_identity: String,
+}
+
+/// Cheap but change-sensitive fingerprint of an archive: size plus the
+/// last-modified timestamp in milliseconds. The launcher writes archives
+/// atomically, so any pack update moves this fingerprint.
+pub fn archive_identity(path: &Path) -> Option<String> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let stamp = metadata
+        .modified()
+        .ok()
+        .and_then(|since| since.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|delta| delta.as_millis() as u64)
+        .unwrap_or(0);
+    Some(format!("{}-{stamp}", metadata.len()))
+}
+
+/// Applies overrides only when the archive differs from the last applied
+/// snapshot; `Ok(None)` means overrides are already up to date.
+///
+/// Re-extracting on every launch (the old behaviour) returned user-edited
+/// `config/*`, keybinds and shader settings back to the shipped defaults. With
+/// the marker, overrides behave like in the Modrinth app: extracted at install
+/// and at pack updates, never simply "on each run".
+pub async fn extract_overrides_when_changed(
+    archive: &Path,
+    instance_dir: &Path,
+    managed: &BTreeSet<String>,
+    cancel: Option<Arc<AtomicBool>>,
+) -> Result<Option<usize>, ModpackError> {
+    let identity = archive_identity(archive);
+    let state_path = instance_dir.join(OVERRIDES_STATE_FILE);
+    if let Some(id) = &identity {
+        let state = tokio::fs::read(&state_path)
+            .await
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<OverridesState>(&bytes).ok());
+        if state.as_ref().is_some_and(|state| &state.archive_identity == id) {
+            return Ok(None);
+        }
+    }
+
+    let archive = archive.to_path_buf();
+    let instance_dir = instance_dir.to_path_buf();
+    let managed = managed.to_owned();
+    let written = tokio::task::spawn_blocking(move || {
+        extract_overrides_with_limits(
+            &archive,
+            &instance_dir,
+            MAX_OVERRIDE_BYTES,
+            MAX_OVERRIDE_FILES,
+            &managed,
+            cancel.as_deref(),
+        )
+    })
+    .await
+    .map_err(|error| ModpackError::Validation(format!("extract task failed: {error}")))??;
+
+    if let Some(id) = identity {
+        let state = OverridesState {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            archive_identity: id,
+        };
+        // A failed marker write is not fatal: the next run simply re-applies.
+        let _ = save_json_atomic(&state_path, &state);
+    }
+    Ok(Some(written))
 }
 
 #[cfg(test)]
@@ -500,6 +603,77 @@ mod tests {
         assert_eq!(manifest.files.len(), 1, "server-only file must be skipped");
         assert_eq!(manifest.files[0].path, "mods/example.jar");
         assert!(manifest.files[0].sha512.starts_with('a'));
+    }
+
+    #[tokio::test]
+    async fn conditional_fetch_reuses_the_cached_archive_on_304()
+    -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
+
+        let directory = tempfile::tempdir()?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let url = format!("http://{address}/pack.mrpack");
+
+        let mut zip_body = Vec::new();
+        {
+            let cursor = std::io::Cursor::new(&mut zip_body);
+            let mut writer = zip::ZipWriter::new(cursor);
+            let options = zip::write::SimpleFileOptions::default();
+            writer.start_file(INDEX_FILE, options)?;
+            std::io::Write::write_all(
+                &mut writer,
+                br#"{"formatVersion":1,"name":"Test pack","versionId":"1.2.3","files":[],"dependencies":{"minecraft":"1.21.1","neoforge":"21.1.248"}}"#,
+            )?;
+            writer.finish()?;
+        }
+
+        // First request gets the archive plus an ETag, the conditional re-check
+        // answers 304 with no body at all.
+        let body_for_server = zip_body;
+        let server = tokio::spawn(async move {
+            for first_round in [true, false] {
+                let (mut socket, _) = match listener.accept().await {
+                    Ok(pair) => pair,
+                    Err(_) => return,
+                };
+                let mut request = [0u8; 8192];
+                let _ = socket.read(&mut request).await;
+                if first_round {
+                    let head = format!(
+                        "HTTP/1.1 200 OK\r\nETag: \"pack-v1\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body_for_server.len()
+                    );
+                    let _ = socket.write_all(head.as_bytes()).await;
+                    let _ = socket.write_all(&body_for_server).await;
+                } else {
+                    let _ = socket.write_all(b"HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n").await;
+                }
+            }
+        });
+
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let key = hash_bytes(HashAlgo::Sha256, url.as_bytes())[..16].to_owned();
+        let cache_dir = directory.path().join("cache");
+        let archive = cache_dir
+            .join("mrpack")
+            .join(format!("{key}.mrpack"));
+
+        let first = fetch(&client, &url, &cache_dir).await?;
+        assert_eq!(first.index.version_id, "1.2.3");
+        assert!(archive.is_file(), "first fetch downloads the archive");
+        let stamp = std::fs::metadata(&archive)?.modified()?;
+
+        let second = fetch(&client, &url, &cache_dir).await?;
+        assert_eq!(second.index.version_id, "1.2.3");
+        let stamp_after = std::fs::metadata(&archive)?.modified()?;
+        assert_eq!(
+            stamp, stamp_after,
+            "a 304 answer must reuse the cached archive without rewriting it"
+        );
+
+        server.await?;
+        Ok(())
     }
 
     #[test]
@@ -576,12 +750,112 @@ mod tests {
         }
 
         let instance = directory.path().join("instance");
-        let error = extract_overrides_with_limits(&archive, &instance, 15, 100)
+        let error = extract_overrides_with_limits(&archive, &instance, 15, 100, &BTreeSet::new(), None)
             .expect_err("size limit must be enforced");
         assert!(matches!(error, ModpackError::Validation(_)));
-        let error = extract_overrides_with_limits(&archive, &instance, 1024, 1)
+        let error = extract_overrides_with_limits(&archive, &instance, 1024, 1, &BTreeSet::new(), None)
             .expect_err("file limit must be enforced");
         assert!(matches!(error, ModpackError::Validation(_)));
+        Ok(())
+    }
+
+    fn write_pack(archive: &Path, entries: &[(&str, &[u8])]) {
+        let file = std::fs::File::create(archive).expect("zip file");
+        let mut writer = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        for (name, body) in entries {
+            writer.start_file(*name, options).expect("zip entry");
+            std::io::Write::write_all(&mut writer, body).expect("zip body");
+        }
+        writer.finish().expect("zip finish");
+    }
+
+    #[test]
+    fn env_optional_becomes_optional_files() {
+        let mut index = sample_index();
+        index.files.push(MrpackFile {
+            path: "mods/optional.jar".to_owned(),
+            file_size: 20,
+            hashes: BTreeMap::from([("sha1".to_owned(), "c".repeat(40))]),
+            downloads: vec!["https://cdn.modrinth.com/optional.jar".to_owned()],
+            env: BTreeMap::from([("client".to_owned(), "optional".to_owned())]),
+        });
+        let manifest = index.to_manifest().expect("valid");
+        assert_eq!(manifest.files.len(), 1, "required file stays required");
+        assert_eq!(manifest.optional_files.len(), 1, "optional entry moves out");
+        assert_eq!(manifest.optional_files[0].path, "mods/optional.jar");
+
+        // The UI switch can now turn the optional entry off like any other.
+        let overrides = BTreeMap::from([("mods/optional.jar".to_owned(), false)]);
+        let enabled = manifest.enabled_files(&overrides);
+        assert_eq!(enabled.len(), 1);
+    }
+
+    #[test]
+    fn version_labels_reject_path_traversal() {
+        let mut index = sample_index();
+        index
+            .dependencies
+            .insert("minecraft".to_owned(), "../../evil".to_owned());
+        assert!(index.to_manifest().is_err());
+
+        let mut index = sample_index();
+        index
+            .dependencies
+            .insert("neoforge".to_owned(), "21.1.248/..".to_owned());
+        assert!(index.to_manifest().is_err());
+    }
+
+    #[tokio::test]
+    async fn overrides_are_reapplied_only_when_the_archive_changes()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let archive = directory.path().join("pack.mrpack");
+        write_pack(&archive, &[("overrides/config/runtime.toml", b"shipped")]);
+        let instance = directory.path().join("instance");
+
+        let first = extract_overrides_when_changed(&archive, &instance, &BTreeSet::new(), None).await?;
+        assert_eq!(first, Some(1));
+
+        // The user edits the config after installation.
+        let config = instance.join("config").join("runtime.toml");
+        std::fs::write(&config, b"user-edited")?;
+
+        let again = extract_overrides_when_changed(&archive, &instance, &BTreeSet::new(), None).await?;
+        assert_eq!(again, None, "unchanged archive must not be re-extracted");
+        let content = std::fs::read(&config)?;
+        assert_eq!(content, b"user-edited", "user edits must survive");
+
+        // A rebuilt pack moves the fingerprint, and overrides apply once more.
+        write_pack(&archive, &[("overrides/config/runtime.toml", b"shipped v2")]);
+        let refreshed = extract_overrides_when_changed(&archive, &instance, &BTreeSet::new(), None).await?;
+        assert_eq!(refreshed, Some(1));
+        let content = std::fs::read(&config)?;
+        assert_eq!(content, b"shipped v2");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn overrides_skip_sync_managed_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let archive = directory.path().join("pack.mrpack");
+        write_pack(
+            &archive,
+            &[
+                ("overrides/config/managed.toml", b"zip copy"),
+                ("overrides/config/free.toml", b"zip only"),
+            ],
+        );
+        let instance = directory.path().join("instance");
+        let managed = BTreeSet::from(["config/managed.toml".to_owned()]);
+
+        let written = extract_overrides_when_changed(&archive, &instance, &managed, None).await?;
+        assert_eq!(written, Some(1), "only the unmanaged file is extracted");
+        assert!(
+            !instance.join("config").join("managed.toml").exists(),
+            "sync-owned path must stay untouched by overrides"
+        );
+        assert!(instance.join("config").join("free.toml").is_file());
         Ok(())
     }
 }

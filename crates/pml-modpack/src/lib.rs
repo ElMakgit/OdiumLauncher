@@ -11,8 +11,7 @@ use std::path::{Path, PathBuf};
 
 use pml_config::{save_json_atomic, LoaderSpec, PortablePaths, ServerSpec};
 use pml_downloader::{
-    hash_bytes, is_safe_relative, safe_extract_zip, DownloadEvent, DownloadTask, Downloader,
-    HashAlgo,
+    hash_bytes, is_safe_relative, DownloadEvent, DownloadTask, Downloader, HashAlgo,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -20,7 +19,10 @@ use tokio::sync::mpsc;
 
 mod mrpack;
 
-pub use mrpack::{extract_overrides, read_index, MrpackArchive, MrpackIndex};
+pub use mrpack::{
+    archive_identity, extract_overrides, extract_overrides_when_changed, read_index, MrpackArchive,
+    MrpackIndex, OVERRIDES_STATE_FILE,
+};
 
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
 pub const STATE_FILE: &str = ".pml_manifest_state.json";
@@ -124,6 +126,11 @@ impl Manifest {
                 "пустая версия загрузчика".to_owned(),
             ));
         }
+        // `mc_version` and `loader.version` end up inside filesystem paths
+        // (loader cache, version JSON folder). A manifest is external input, so
+        // keep them on the ASCII path-safe allowlist instead of trusting them.
+        validate_version_label("mc_version", &self.mc_version)?;
+        validate_version_label("версии загрузчика", &self.loader.version)?;
         if let Some(server) = &self.server {
             server.validate()?;
         }
@@ -209,6 +216,25 @@ fn algo_name(algo: HashAlgo) -> &'static str {
     }
 }
 
+/// Allowlist for version strings that become path components: `1.21.1`,
+/// `52.0.28`, `24w14a` all fit; `../../evil` and everything exotic does not.
+fn validate_version_label(field: &str, value: &str) -> Result<(), ModpackError> {
+    if value.is_empty() || value.len() > 96 {
+        return Err(ModpackError::Validation(format!(
+            "{field} имеет недопустимую длину"
+        )));
+    }
+    if !value
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '+' | '-'))
+    {
+        return Err(ModpackError::Validation(format!(
+            "{field} содержит недопустимые символы: {value}"
+        )));
+    }
+    Ok(())
+}
+
 fn default_schema_version() -> u32 {
     MANIFEST_SCHEMA_VERSION
 }
@@ -252,6 +278,8 @@ pub enum ModpackError {
     },
     #[error("манифест {0} недоступен и в кэше нет копии")]
     ManifestUnavailable(String),
+    #[error("операция отменена")]
+    Cancelled,
 }
 
 /// Loads a manifest from `builtin://`, `file://` or HTTP(S), caching the last
@@ -267,6 +295,21 @@ pub async fn load_manifest(
 
     if let Some(path) = url.strip_prefix("file://") {
         let path = local_path(path);
+        // Apply the same hard cap as the HTTP path so a hostile local file
+        // cannot be read into memory without limit.
+        let length = tokio::fs::metadata(&path)
+            .await
+            .map_err(|source| ModpackError::Io {
+                path: path.clone(),
+                source,
+            })?
+            .len();
+        if length > MAX_MANIFEST_BYTES as u64 {
+            return Err(ModpackError::Validation(format!(
+                "манифест {url} больше {} МиБ",
+                MAX_MANIFEST_BYTES / (1024 * 1024)
+            )));
+        }
         let bytes = tokio::fs::read(&path)
             .await
             .map_err(|source| ModpackError::Io { path, source })?;
@@ -466,15 +509,17 @@ impl ModpackSync {
         let state_path = request.instance_dir.join(STATE_FILE);
         let mut state = load_state(&state_path).await;
         let enabled = request.manifest.enabled_files(request.overrides);
-        let optional_enabled =
-            enabled
-                .iter()
-                .filter(|file| {
-                    request.manifest.optional_files.iter().any(|optional| {
-                        normalize_path(&optional.path) == normalize_path(&file.path)
-                    })
-                })
-                .count();
+        // A set once, instead of an O(n·m) rebuild over every enabled file.
+        let optional_paths = request
+            .manifest
+            .optional_files
+            .iter()
+            .map(|file| normalize_path(&file.path))
+            .collect::<BTreeSet<_>>();
+        let optional_enabled = enabled
+            .iter()
+            .filter(|file| optional_paths.contains(&normalize_path(&file.path)))
+            .count();
 
         let mut desired = BTreeMap::new();
         let mut tasks = Vec::new();
@@ -536,14 +581,23 @@ impl ModpackSync {
             if is_safe_relative(Path::new(&relative)) {
                 let path = request.instance_dir.join(path_buf(&relative));
                 match tokio::fs::remove_file(&path).await {
-                    Ok(()) => report.removed += 1,
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                    // Only drop the state record once the file is really gone;
+                    // otherwise a locked file would become a permanent orphan
+                    // that nothing retries to delete.
+                    Ok(()) => {
+                        report.removed += 1;
+                        state.files.remove(&relative);
+                    }
+                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                        state.files.remove(&relative);
+                    }
                     Err(error) => {
                         tracing::warn!(%error, path = %path.display(), "could not remove stale file");
                     }
                 }
+            } else {
+                state.files.remove(&relative);
             }
-            state.files.remove(&relative);
         }
 
         state.schema_version = MANIFEST_SCHEMA_VERSION;
@@ -557,28 +611,6 @@ impl ModpackSync {
             "modpack sync finished"
         );
         Ok(report)
-    }
-
-    /// Installs a zip-based modpack into an instance. Kept separate from the
-    /// manifest flow because zips are not delta-tracked by SHA-256 entries.
-    pub async fn install_zip(
-        &self,
-        zip_path: &Path,
-        instance_dir: &Path,
-    ) -> Result<Vec<PathBuf>, ModpackError> {
-        let zip_path = zip_path.to_path_buf();
-        let instance_dir = instance_dir.to_path_buf();
-        tokio::fs::create_dir_all(&instance_dir)
-            .await
-            .map_err(|source| ModpackError::Io {
-                path: instance_dir.clone(),
-                source,
-            })?;
-        let extracted =
-            tokio::task::spawn_blocking(move || safe_extract_zip(&zip_path, &instance_dir))
-                .await
-                .map_err(|error| ModpackError::Validation(format!("extract task: {error}")))??;
-        Ok(extracted)
     }
 }
 
@@ -678,6 +710,25 @@ mod tests {
     }
 
     #[test]
+    fn rejects_unsafe_version_labels() {
+        for bad in [
+            "../../evil",
+            "1.21/evil",
+            "1.21\\evil",
+            "1.21 x64",
+            "версия",
+        ] {
+            let mut manifest = sample_manifest();
+            manifest.mc_version = bad.to_owned();
+            assert!(manifest.validate().is_err(), "mc_version {bad:?}");
+
+            let mut manifest = sample_manifest();
+            manifest.loader.version = bad.to_owned();
+            assert!(manifest.validate().is_err(), "loader version {bad:?}");
+        }
+    }
+
+    #[test]
     fn optional_files_respect_overrides() {
         let manifest = sample_manifest();
         let mut overrides = BTreeMap::new();
@@ -694,6 +745,32 @@ mod tests {
         assert_eq!(normalize_path("./mods//a.jar"), "mods/a.jar");
         // `..` is preserved and rejected by validate(), never silently resolved.
         assert_eq!(normalize_path("../evil.jar"), "../evil.jar");
+    }
+
+    #[tokio::test]
+    async fn manifest_network_failure_falls_back_to_cache()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        // Bind a port, then drop the listener: the connection is refused with
+        // no resolver involved, which must degrade to the last good manifest.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        drop(listener);
+
+        let url = format!("http://{address}/manifest.json");
+        let cache_dir = directory.path().join("meta");
+        let cache = cache_dir.join("manifests").join(format!(
+            "{}.json",
+            &hash_bytes(HashAlgo::Sha256, url.as_bytes())[..16]
+        ));
+        tokio::fs::create_dir_all(cache.parent().unwrap()).await?;
+        tokio::fs::write(&cache, sample_manifest().to_json_pretty()?).await?;
+
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let manifest = load_manifest(&client, &url, &cache_dir).await?;
+        assert_eq!(manifest.mc_version, sample_manifest().mc_version);
+        assert_eq!(manifest.loader.version, sample_manifest().loader.version);
+        Ok(())
     }
 
     fn local_file(path: &str, source: &Path) -> ManifestFile {

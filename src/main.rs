@@ -12,9 +12,10 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::EnvFilter;
 
 fn main() -> Result<()> {
-    // Paths are derived from the executable location, never from the current
-    // working directory: the launcher is meant to run from a USB stick.
-    let paths = PortablePaths::discover().context("не удалось определить папку launcher_data")?;
+    // The mutable data root lives in the system app-data directory (with a
+    // portable override), never next to the executable or the working
+    // directory.
+    let paths = PortablePaths::discover().context("не удалось определить папку данных лаунчера")?;
     let _log_guard = init_logging(&paths)?;
     install_panic_hook();
 
@@ -25,7 +26,7 @@ fn main() -> Result<()> {
     );
 
     let store = ConfigStore::load_or_create(paths.config_file())
-        .context("не удалось загрузить launcher_data/config.json")?;
+        .context("не удалось загрузить config.json лаунчера")?;
     tracing::info!(
         source = %store.config().active_source_id,
         nick = %store.config().nick,

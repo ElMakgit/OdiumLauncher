@@ -8,6 +8,8 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 use pml_config::{LoaderKind, LoaderSpec, PortablePaths};
@@ -50,6 +52,17 @@ pub enum LoaderError {
         code: Option<i32>,
         tail: String,
     },
+    #[error("установка {0} отменена")]
+    InstallerCancelled(String),
+    #[error("установщик {loader} не завершился за {seconds} с и был остановлен")]
+    InstallerTimedOut { loader: String, seconds: u64 },
+    #[error(".sha1 для {0} недоступен; загрузка установщика без проверки отменена")]
+    Sha1Unavailable(String),
+    #[error("профиль загрузчика наследует {actual}, сборка требует {expected}")]
+    ProfileMismatch {
+        actual: String,
+        expected: String,
+    },
     #[error("установщик {0} не создал version JSON")]
     MissingVersionJson(String),
     #[error("профиль загрузчика не найден: {0}")]
@@ -70,6 +83,7 @@ struct InstallerRequest<'a> {
     cache: &'a Path,
     java_exe: &'a Path,
     version_id: &'a str,
+    cancel: Option<Arc<AtomicBool>>,
 }
 
 impl LoaderInstaller {
@@ -80,23 +94,26 @@ impl LoaderInstaller {
     /// Installs (or reuses) the requested loader and returns its profile JSON.
     /// The profile is not merged here; `Minecraft::prepare_launch` does that so
     /// the vanilla metadata stays authoritative for assets and the client jar.
+    /// `cancel` must be checked so pressing "Отмена" during the up to five
+    /// minutes of an installer run does not leave the UI stuck.
     pub async fn install(
         &self,
         mc_version: &str,
         spec: &LoaderSpec,
         java_exe: &Path,
         progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
+        cancel: Option<Arc<AtomicBool>>,
     ) -> Result<VersionJson, LoaderError> {
-        match spec.kind {
+        let profile = match spec.kind {
             LoaderKind::Fabric => {
                 let url = fabric_profile_url(mc_version, &spec.version);
                 let cache = self.profile_cache("fabric", mc_version, &spec.version);
-                self.fetch_profile(&url, &cache, progress).await
+                self.fetch_profile(&url, &cache, progress).await?
             }
             LoaderKind::Quilt => {
                 let url = quilt_profile_url(mc_version, &spec.version);
                 let cache = self.profile_cache("quilt", mc_version, &spec.version);
-                self.fetch_profile(&url, &cache, progress).await
+                self.fetch_profile(&url, &cache, progress).await?
             }
             LoaderKind::Forge => {
                 let url = forge_installer_url(mc_version, &spec.version);
@@ -109,10 +126,11 @@ impl LoaderInstaller {
                         cache: &cache,
                         java_exe,
                         version_id: &version_id,
+                        cancel: cancel.clone(),
                     },
                     progress,
                 )
-                .await
+                .await?
             }
             LoaderKind::NeoForge => {
                 let url = neoforge_installer_url(&spec.version);
@@ -125,12 +143,15 @@ impl LoaderInstaller {
                         cache: &cache,
                         java_exe,
                         version_id: &version_id,
+                        cancel,
                     },
                     progress,
                 )
-                .await
+                .await?
             }
-        }
+        };
+        validate_profile(&profile, mc_version)?;
+        Ok(profile)
     }
 
     async fn fetch_profile(
@@ -177,6 +198,7 @@ impl LoaderInstaller {
             cache,
             java_exe,
             version_id,
+            cancel,
         } = request;
         // The installer also writes its JSON into versions/. Reuse it when it is
         // already there, which makes subsequent launches network-free.
@@ -194,18 +216,21 @@ impl LoaderInstaller {
                         source,
                     })?;
             }
-            let sha1 = fetch_sha1(&self.downloader, url).await;
-            if sha1.is_none() {
+            // Maven always publishes the .sha1 next to the jar; a missing one
+            // means the endpoint is broken or hostile, and silently installing
+            // an unverified executable is not an option.
+            let Some(sha1) = fetch_sha1(&self.downloader, url).await else {
                 tracing::warn!(
                     url,
                     loader = loader_name,
-                    "installer .sha1 is unavailable; downloading without hash verification"
+                    "installer .sha1 is unavailable; refusing an unverified download"
                 );
-            }
+                return Err(LoaderError::Sha1Unavailable(url.to_owned()));
+            };
             let task = DownloadTask::new(
                 url,
                 cache.to_path_buf(),
-                sha1,
+                Some(sha1),
                 HashAlgo::Sha1,
                 None,
                 format!("{loader_name} installer"),
@@ -213,6 +238,13 @@ impl LoaderInstaller {
             self.downloader
                 .download_many(vec![task], progress.clone())
                 .await?;
+        }
+
+        // A cancelled run must never spawn the installer in the first place.
+        if let Some(flag) = cancel.as_ref() {
+            if flag.load(Ordering::SeqCst) {
+                return Err(LoaderError::InstallerCancelled(loader_name.to_owned()));
+            }
         }
 
         let mut command = tokio::process::Command::new(java_exe);
@@ -231,25 +263,35 @@ impl LoaderInstaller {
             .kill_on_drop(true);
         hide_console(&mut command);
 
-        let output = match tokio::time::timeout(INSTALLER_TIMEOUT, command.output()).await {
-            Ok(result) => result.map_err(|source| {
-                LoaderError::Spawn(format!("{}: {source}", java_exe.display()))
-            })?,
+        let output = match tokio::time::timeout(INSTALLER_TIMEOUT, async {
+            tokio::select! {
+                result = command.output() => result.map_err(|source| {
+                    LoaderError::Spawn(format!("{}: {source}", java_exe.display()))
+                }),
+                _ = wait_for_cancel(cancel.as_ref()) => {
+                    Err(LoaderError::InstallerCancelled(loader_name.to_owned()))
+                }
+            }
+        })
+        .await
+        {
+            Ok(result) => result,
             Err(_) => {
                 tracing::warn!(
                     loader = loader_name,
                     seconds = INSTALLER_TIMEOUT.as_secs(),
                     "loader installer timed out and was killed"
                 );
-                return Err(LoaderError::InstallerFailed {
+                return Err(LoaderError::InstallerTimedOut {
                     loader: loader_name.to_owned(),
-                    code: None,
-                    tail: format!(
-                        "превышен таймаут установщика {} с",
-                        INSTALLER_TIMEOUT.as_secs()
-                    ),
+                    seconds: INSTALLER_TIMEOUT.as_secs(),
                 });
             }
+        };
+        let output = match output {
+            Ok(output) => output,
+            // Dropping the `output()` future kills the child (`kill_on_drop`).
+            Err(error) => return Err(error),
         };
         if !output.status.success() {
             return Err(LoaderError::InstallerFailed {
@@ -360,6 +402,31 @@ pub fn neoforge_installer_url(loader_version: &str) -> String {
     format!("{NEOFORGE_MAVEN}/{loader_version}/neoforge-{loader_version}-installer.jar")
 }
 
+/// A profile that claims another Minecraft base would surface as strange
+/// library paths deep inside pml-minecraft, far from the real cause. Check it
+/// right where the profile is obtained.
+fn validate_profile(profile: &VersionJson, mc_version: &str) -> Result<(), LoaderError> {
+    match profile.inherits_from.as_deref() {
+        Some(actual) if actual != mc_version => Err(LoaderError::ProfileMismatch {
+            actual: actual.to_owned(),
+            expected: mc_version.to_owned(),
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Resolves when the flag is set; without a flag it never resolves. Used as
+/// the cancellation arm of the `select!` around the installer run.
+async fn wait_for_cancel(cancel: Option<&Arc<AtomicBool>>) {
+    let Some(flag) = cancel else {
+        std::future::pending::<()>().await;
+        return;
+    };
+    while !flag.load(Ordering::SeqCst) {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+    }
+}
+
 async fn read_profile(path: &Path) -> Option<VersionJson> {
     let bytes = tokio::fs::read(path).await.ok()?;
     serde_json::from_slice(&bytes).ok()
@@ -387,15 +454,40 @@ async fn find_version_json(root: &Path, version_id: &str) -> Option<PathBuf> {
     // Only an exact `{version_id}.json` name is accepted: guessing by loader
     // marker used to pick an unrelated profile and could start the wrong
     // version.
-    let mut entries = tokio::fs::read_dir(root).await.ok()?;
-    while let Some(entry) = entries.next_entry().await.ok()? {
-        let directory = entry.path();
-        if !directory.is_dir() {
-            continue;
+    let mut entries = match tokio::fs::read_dir(root).await {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                root = %root.display(),
+                "cannot list the versions directory"
+            );
+            return None;
         }
-        let file = directory.join(format!("{version_id}.json"));
-        if file.is_file() {
-            return Some(file);
+    };
+    loop {
+        match entries.next_entry().await {
+            Ok(Some(entry)) => {
+                let directory = entry.path();
+                if !directory.is_dir() {
+                    continue;
+                }
+                let file = directory.join(format!("{version_id}.json"));
+                if file.is_file() {
+                    return Some(file);
+                }
+            }
+            Ok(None) => break,
+            // One unreadable entry (permissions, `\\?\` quirks) must not stop
+            // the rest of the scan: warn and move on to the next directory.
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    root = %root.display(),
+                    "skipping an unreadable version directory"
+                );
+                continue;
+            }
         }
     }
     tracing::debug!(
@@ -406,9 +498,17 @@ async fn find_version_json(root: &Path, version_id: &str) -> Option<PathBuf> {
     None
 }
 
+// The whole purpose of this fallback is `%APPDATA%\.minecraft`; on other
+// systems there is no such default location to borrow a profile from.
+#[cfg(windows)]
 fn default_minecraft_versions() -> Option<PathBuf> {
     let appdata = std::env::var_os("APPDATA")?;
     Some(PathBuf::from(appdata).join(".minecraft").join("versions"))
+}
+
+#[cfg(not(windows))]
+fn default_minecraft_versions() -> Option<PathBuf> {
+    None
 }
 
 async fn fetch_sha1(downloader: &Downloader, url: &str) -> Option<String> {

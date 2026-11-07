@@ -1,7 +1,15 @@
-//! Portable paths, the user-facing `config.json` schema and crash-safe persistence.
+//! Data paths, the user-facing `config.json` schema and crash-safe persistence.
 //!
 //! The launcher never writes to the registry and never uses the current working
-//! directory: every mutable byte lives in `launcher_data` next to the executable.
+//! directory. By default every mutable byte lives in the per-user application
+//! data directory (`%LOCALAPPDATA%\OdiumLauncher` on Windows,
+//! `$XDG_DATA_HOME/odium-launcher` elsewhere), so the executable can sit on the
+//! Desktop or in a Downloads folder without scattering gigabytes next to it.
+//!
+//! `ODIUM_DATA_DIR` overrides the root. Setting `ODIUM_PORTABLE=1` (or creating
+//! a `portable.flag` file next to the executable) restores the old behaviour:
+//! `launcher_data` beside the executable. A legacy folder found on first start
+//! is moved into the new root automatically, preserving configs, mods and saves.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -524,7 +532,16 @@ pub enum ConfigError {
     Validation(String),
 }
 
-/// Every path is derived from the executable location, never from `current_dir()`.
+/// Overrides the data root completely. Useful for tests and managed installs.
+pub const DATA_DIR_ENV: &str = "ODIUM_DATA_DIR";
+/// Opts back into a `launcher_data` folder next to the executable.
+pub const PORTABLE_ENV: &str = "ODIUM_PORTABLE";
+pub const PORTABLE_MARKER: &str = "portable.flag";
+pub const LEGACY_DIR_NAME: &str = "launcher_data";
+const SYSTEM_APP_DIR: &str = "OdiumLauncher";
+
+/// Resolves the mutable-data root. Never uses `current_dir()`: the executable
+/// location is only the fallback and the source of the legacy folder.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PortablePaths {
     root: PathBuf,
@@ -536,8 +553,28 @@ impl PortablePaths {
             path: PathBuf::from("<current_exe>"),
             source,
         })?;
-        let dir = exe.parent().ok_or(ConfigError::NoExeDirectory)?;
-        Self::from_root(dir.join("launcher_data"))
+        let exe_dir = exe.parent().ok_or(ConfigError::NoExeDirectory)?;
+
+        if let Some(root) = std::env::var_os(DATA_DIR_ENV)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+        {
+            return Self::from_root(root);
+        }
+
+        let legacy = exe_dir.join(LEGACY_DIR_NAME);
+        if env_flag(PORTABLE_ENV) || exe_dir.join(PORTABLE_MARKER).is_file() {
+            return Self::from_root(legacy);
+        }
+
+        let Some(root) = system_data_root() else {
+            // No usable system directory (for example a stripped-down session
+            // without USERPROFILE): fall back to the old portable layout rather
+            // than refusing to start.
+            return Self::from_root(legacy);
+        };
+        migrate_legacy_data(&legacy, &root);
+        Self::from_root(root)
     }
 
     pub fn from_root(root: impl Into<PathBuf>) -> Result<Self, ConfigError> {
@@ -612,6 +649,235 @@ impl PortablePaths {
     pub fn temp_dir(&self) -> PathBuf {
         self.root.join("temp")
     }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var_os(name).is_some_and(|value| {
+        let value = value.to_string_lossy();
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    })
+}
+
+/// Per-user application data directory. On Windows this is
+/// `%LOCALAPPDATA%\OdiumLauncher`; on other systems the XDG data directory.
+fn system_data_root() -> Option<PathBuf> {
+    #[cfg(windows)]
+    {
+        // `LOCALAPPDATA` is the canonical place for application data that does
+        // not roam with the user profile. `APPDATA` is a fallback for unusual
+        // service accounts where only the roaming variable is defined.
+        if let Some(base) = std::env::var_os("LOCALAPPDATA")
+            .filter(|value| !value.is_empty())
+            .or_else(|| std::env::var_os("APPDATA").filter(|value| !value.is_empty()))
+        {
+            return Some(PathBuf::from(base).join(SYSTEM_APP_DIR));
+        }
+        if let Some(profile) = std::env::var_os("USERPROFILE").filter(|value| !value.is_empty()) {
+            return Some(
+                PathBuf::from(profile)
+                    .join("AppData")
+                    .join("Local")
+                    .join(SYSTEM_APP_DIR),
+            );
+        }
+        None
+    }
+    #[cfg(not(windows))]
+    {
+        if let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
+            return Some(PathBuf::from(base).join("odium-launcher"));
+        }
+        if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+            return Some(
+                PathBuf::from(home)
+                    .join(".local")
+                    .join("share")
+                    .join("odium-launcher"),
+            );
+        }
+        None
+    }
+}
+
+/// Moves a pre-relocation `launcher_data` folder into the system data root.
+///
+/// A same-volume `rename` is instant even for multi-gigabyte asset folders; a
+/// recursive copy is the fallback for a launcher that lives on another drive.
+/// The legacy folder is kept when copying fails, and a partially copied target
+/// is removed so the next start can retry cleanly.
+fn migrate_legacy_data(legacy: &Path, target: &Path) {
+    if legacy == target || !legacy.is_dir() {
+        return;
+    }
+    if target.is_dir() {
+        // An already initialised root belongs to the user: only seed a missing
+        // config from a packaged `launcher_data/config.json` (the dist layout)
+        // and never touch the user's real data.
+        if target.join("config.json").exists() {
+            let seed = legacy.join("config.json");
+            let destination = target.join("config.json");
+            if seed.is_file() && !destination.exists() {
+                match fs::copy(&seed, &destination) {
+                    Ok(_) => tracing::info!(
+                        from = %seed.display(),
+                        to = %destination.display(),
+                        "seeded config.json from the packaged launcher_data"
+                    ),
+                    Err(error) => tracing::warn!(
+                        %error,
+                        from = %seed.display(),
+                        "could not seed config.json"
+                    ),
+                }
+            }
+            return;
+        }
+
+        // The root exists but was never initialised (for example an earlier
+        // build created only a cache subfolder). Merge the legacy data in
+        // without overwriting anything already present, then drop the legacy
+        // folder so the next start does not repeat the work.
+        match merge_dir_recursive(legacy, target) {
+            Ok(entries) => match fs::remove_dir_all(legacy) {
+                Ok(()) => tracing::info!(
+                    entries,
+                    from = %legacy.display(),
+                    to = %target.display(),
+                    "merged the legacy launcher_data into the system data directory"
+                ),
+                Err(error) => tracing::warn!(
+                    %error,
+                    path = %legacy.display(),
+                    "merged launcher data but could not remove the legacy folder"
+                ),
+            },
+            Err(error) => tracing::warn!(
+                %error,
+                from = %legacy.display(),
+                to = %target.display(),
+                "could not merge launcher_data; keeping the legacy folder"
+            ),
+        }
+        return;
+    }
+
+    if let Some(parent) = target.parent() {
+        if let Err(error) = fs::create_dir_all(parent) {
+            tracing::warn!(%error, path = %parent.display(), "cannot create the data root");
+            return;
+        }
+    }
+
+    match fs::rename(legacy, target) {
+        Ok(()) => {
+            tracing::info!(
+                from = %legacy.display(),
+                to = %target.display(),
+                "moved launcher_data into the system data directory"
+            );
+            return;
+        }
+        Err(error) => tracing::info!(
+            %error,
+            from = %legacy.display(),
+            "rename failed; copying launcher data instead"
+        ),
+    }
+
+    match copy_dir_recursive(legacy, target) {
+        Ok(bytes) => match fs::remove_dir_all(legacy) {
+            Ok(()) => tracing::info!(
+                bytes,
+                from = %legacy.display(),
+                to = %target.display(),
+                "copied and removed the legacy launcher_data"
+            ),
+            Err(error) => tracing::warn!(
+                %error,
+                path = %legacy.display(),
+                "copied launcher data but could not remove the legacy folder"
+            ),
+        },
+        Err(error) => {
+            tracing::warn!(
+                %error,
+                from = %legacy.display(),
+                to = %target.display(),
+                "could not migrate launcher_data; keeping the legacy folder"
+            );
+            let _ = fs::remove_dir_all(target);
+        }
+    }
+}
+
+/// Non-destructive merge used when the system root exists but is incomplete.
+/// Existing destination files win; top-level entries are moved with `rename`
+/// when possible so a same-volume migration stays instant.
+fn merge_dir_recursive(source: &Path, destination: &Path) -> std::io::Result<u64> {
+    let mut entries = 0u64;
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let from = entry.path();
+        let to = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            if !to.exists() && fs::rename(&from, &to).is_ok() {
+                entries = entries.saturating_add(count_entries(&to));
+            } else {
+                entries = entries.saturating_add(merge_dir_recursive(&from, &to)?);
+            }
+        } else if file_type.is_file() {
+            if to.exists() {
+                // Never overwrite data that the system root already holds.
+                continue;
+            }
+            if fs::rename(&from, &to).is_err() {
+                fs::copy(&from, &to)?;
+            }
+            entries = entries.saturating_add(1);
+        }
+        // Symlinks and other special entries are intentionally skipped.
+    }
+    Ok(entries)
+}
+
+fn count_entries(root: &Path) -> u64 {
+    let mut total = 0u64;
+    let Ok(entries) = fs::read_dir(root) else {
+        return total;
+    };
+    for entry in entries.flatten() {
+        match entry.file_type() {
+            Ok(file_type) if file_type.is_dir() => {
+                total = total.saturating_add(count_entries(&entry.path()))
+            }
+            Ok(file_type) if file_type.is_file() => total = total.saturating_add(1),
+            _ => {}
+        }
+    }
+    total
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> std::io::Result<u64> {
+    let mut bytes = 0u64;
+    fs::create_dir_all(destination)?;
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let file_type = entry.file_type()?;
+        let from = entry.path();
+        let to = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            bytes = bytes.saturating_add(copy_dir_recursive(&from, &to)?);
+        } else if file_type.is_file() {
+            fs::copy(&from, &to)?;
+            bytes = bytes.saturating_add(entry.metadata()?.len());
+        }
+        // Symlinks and other special entries are intentionally skipped: they
+        // are not produced by the launcher and copying them could escape the
+        // destination on Windows.
+    }
+    Ok(bytes)
 }
 
 pub struct ConfigStore {
@@ -879,6 +1145,79 @@ mod tests {
             "server": { "ip": "1.2.3.4", "port": 25565 }
         }))?;
         assert_eq!(config.theme, Theme::Win98);
+        Ok(())
+    }
+
+    #[test]
+    fn legacy_launcher_data_is_migrated() -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let legacy = temp.path().join("launcher_data");
+        let target = temp.path().join("system").join("OdiumLauncher");
+        fs::create_dir_all(legacy.join("instances").join("odium"))?;
+        fs::write(legacy.join("config.json"), b"{\"nick\":\"Steve\"}")?;
+        fs::write(
+            legacy.join("instances").join("odium").join("level.dat"),
+            b"world",
+        )?;
+
+        migrate_legacy_data(&legacy, &target);
+
+        assert!(!legacy.exists(), "legacy folder must be moved");
+        assert_eq!(
+            fs::read(target.join("config.json"))?,
+            b"{\"nick\":\"Steve\"}"
+        );
+        assert_eq!(
+            fs::read(target.join("instances").join("odium").join("level.dat"))?,
+            b"world"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn existing_system_root_only_receives_a_missing_config(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let legacy = temp.path().join("launcher_data");
+        let target = temp.path().join("system");
+        fs::create_dir_all(&legacy)?;
+        fs::create_dir_all(&target)?;
+        fs::write(legacy.join("config.json"), b"packaged")?;
+        fs::write(target.join("config.json"), b"user")?;
+        fs::write(target.join("instances.marker"), b"keep")?;
+
+        migrate_legacy_data(&legacy, &target);
+
+        assert_eq!(fs::read(target.join("config.json"))?, b"user");
+        assert!(target.join("instances.marker").is_file());
+        assert!(legacy.exists(), "an existing root must not consume legacy data");
+        Ok(())
+    }
+
+    #[test]
+    fn incomplete_system_root_is_merged_with_legacy_data(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let temp = tempfile::tempdir()?;
+        let legacy = temp.path().join("launcher_data");
+        let target = temp.path().join("system").join("OdiumLauncher");
+        fs::create_dir_all(legacy.join("assets").join("objects"))?;
+        fs::write(legacy.join("config.json"), b"{\"nick\":\"Steve\"}")?;
+        fs::write(legacy.join("assets").join("objects").join("a.bin"), b"asset")?;
+        fs::create_dir_all(target.join("mrpack-cache"))?;
+        fs::write(target.join("mrpack-cache").join("keep.tmp"), b"cache")?;
+
+        migrate_legacy_data(&legacy, &target);
+
+        assert!(!legacy.exists(), "legacy folder must be consumed");
+        assert_eq!(fs::read(target.join("config.json"))?, b"{\"nick\":\"Steve\"}");
+        assert_eq!(
+            fs::read(target.join("assets").join("objects").join("a.bin"))?,
+            b"asset"
+        );
+        assert_eq!(
+            fs::read(target.join("mrpack-cache").join("keep.tmp"))?,
+            b"cache"
+        );
         Ok(())
     }
 

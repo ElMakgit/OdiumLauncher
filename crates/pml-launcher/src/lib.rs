@@ -52,13 +52,6 @@ impl RunningGame {
             source,
         })
     }
-
-    pub async fn kill(&mut self) -> Result<(), LaunchError> {
-        self.child.kill().await.map_err(|source| LaunchError::Io {
-            path: self.log_path.clone(),
-            source,
-        })
-    }
 }
 
 /// Pure command construction, separated so argument ordering is unit-testable.
@@ -114,11 +107,13 @@ pub fn spawn_game(spec: &LaunchSpec) -> Result<RunningGame, LaunchError> {
 }
 
 fn log_file_name() -> String {
+    // Milliseconds plus the process id keep two launches in the same second
+    // from truncating each other's log.
     let stamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
+        .map(|duration| duration.as_millis())
         .unwrap_or(0);
-    format!("game-{stamp}.log")
+    format!("game-{stamp}-{}.log", std::process::id())
 }
 
 /// Returns the last `max_lines` lines without loading a multi-megabyte log.
