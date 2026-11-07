@@ -7,7 +7,7 @@
 //! drawn consistently instead of relying on egui defaults.
 
 use std::path::Path;
-use std::sync::atomic::{AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use egui::{
     Align2, Color32, FontData, FontDefinitions, FontFamily, FontId, Pos2, Rect, Response, Sense,
@@ -375,36 +375,10 @@ const WIN11: Palette = Palette {
     checkbox_rounding: 3.0,
 };
 
-static CURRENT_THEME: AtomicU8 = AtomicU8::new(0);
-
 /// Display scale (physical pixels per logical point) as reported by egui.
 /// Custom-painted text uses it to snap glyph sizes to whole pixels, which is
 /// what keeps labels sharp on 4K monitors running at 125-175% scaling.
 static DPI_SCALE: AtomicU32 = AtomicU32::new(0);
-
-fn theme_code(theme: Theme) -> u8 {
-    match theme {
-        Theme::Win98 => 0,
-        Theme::Win7 => 1,
-        Theme::Win81 => 2,
-        Theme::Win10 => 3,
-        Theme::Win11 => 4,
-    }
-}
-
-fn theme_from_code(code: u8) -> Theme {
-    match code {
-        1 => Theme::Win7,
-        2 => Theme::Win81,
-        3 => Theme::Win10,
-        4 => Theme::Win11,
-        _ => Theme::Win98,
-    }
-}
-
-pub fn current_theme() -> Theme {
-    theme_from_code(CURRENT_THEME.load(Ordering::Relaxed))
-}
 
 /// Rounds a point size so the glyphs rasterise at a whole number of physical
 /// pixels. At 150% a 12.5 pt font covers 18.75 px, which the rasteriser spreads
@@ -437,10 +411,6 @@ pub fn mono_font(size: f32) -> FontId {
     FontId::monospace(snap_font_size(size, dpi_scale()))
 }
 
-pub fn set_theme(theme: Theme) {
-    CURRENT_THEME.store(theme_code(theme), Ordering::Relaxed);
-}
-
 pub fn palette(theme: Theme) -> &'static Palette {
     match theme {
         Theme::Win98 => &WIN98,
@@ -451,29 +421,25 @@ pub fn palette(theme: Theme) -> &'static Palette {
     }
 }
 
-pub fn palette_now() -> &'static Palette {
-    palette(current_theme())
-}
-
 /// Height reserved by the main window's custom title strip.
-pub fn title_bar_height() -> f32 {
-    palette_now().title_height + 2.0
+pub fn title_bar_height(theme: Theme) -> f32 {
+    palette(theme).title_height + 2.0
 }
 
-pub fn face() -> Color32 {
-    palette_now().face
+pub fn face(theme: Theme) -> Color32 {
+    palette(theme).face
 }
 
-pub fn panel_color() -> Color32 {
-    palette_now().panel
+pub fn panel_color(theme: Theme) -> Color32 {
+    palette(theme).panel
 }
 
-pub fn row_rounding() -> f32 {
-    palette_now().card_rounding.clamp(0.0, 6.0)
+pub fn row_rounding(theme: Theme) -> f32 {
+    palette(theme).card_rounding.clamp(0.0, 6.0)
 }
 
-pub fn well_rounding() -> f32 {
-    let p = palette_now();
+pub fn well_rounding(theme: Theme) -> f32 {
+    let p = palette(theme);
     if p.bevel == BevelStyle::Soft {
         p.rounding.min(6.0)
     } else {
@@ -481,42 +447,41 @@ pub fn well_rounding() -> f32 {
     }
 }
 
-pub fn text_color() -> Color32 {
-    palette_now().text
+pub fn text_color(theme: Theme) -> Color32 {
+    palette(theme).text
 }
 
-pub fn well_color() -> Color32 {
-    palette_now().well
+pub fn well_color(theme: Theme) -> Color32 {
+    palette(theme).well
 }
 
-pub fn selection_color() -> Color32 {
-    palette_now().selection
+pub fn selection_color(theme: Theme) -> Color32 {
+    palette(theme).selection
 }
 
-pub fn selection_text_color() -> Color32 {
-    palette_now().selection_text
+pub fn selection_text_color(theme: Theme) -> Color32 {
+    palette(theme).selection_text
 }
 
-pub fn row_hover_color() -> Color32 {
-    palette_now().row_hover
+pub fn row_hover_color(theme: Theme) -> Color32 {
+    palette(theme).row_hover
 }
 
-pub fn error_color() -> Color32 {
-    palette_now().error
+pub fn error_color(theme: Theme) -> Color32 {
+    palette(theme).error
 }
 
-pub fn muted_color() -> Color32 {
-    palette_now().muted
+pub fn muted_color(theme: Theme) -> Color32 {
+    palette(theme).muted
 }
 
-pub fn border_color() -> Color32 {
-    palette_now().border
+pub fn border_color(theme: Theme) -> Color32 {
+    palette(theme).border
 }
 
 /// Applies the global egui style for the chosen theme. Call once at startup
 /// and again whenever the player picks another theme.
 pub fn apply(ctx: &egui::Context, theme: Theme) {
-    set_theme(theme);
     install_system_fonts(ctx, theme);
     apply_style(ctx, theme);
 }
@@ -525,14 +490,14 @@ pub fn apply(ctx: &egui::Context, theme: Theme) {
 /// DPI scale. Font sizes are snapped to physical pixels, so they have to be
 /// recomputed for the new scale; without this a 4K laptop screen and a 1080p
 /// external display would share sizes tuned for only one of them.
-pub fn sync_scale(ctx: &egui::Context) {
+pub fn sync_scale(ctx: &egui::Context, theme: Theme) {
     let ppp = ctx.pixels_per_point();
     if !(ppp.is_finite() && ppp > 0.0) {
         return;
     }
     let previous = dpi_scale();
     if (previous - ppp).abs() > 0.01 {
-        apply_style(ctx, current_theme());
+        apply_style(ctx, theme);
         ctx.request_repaint();
     }
 }
@@ -750,8 +715,8 @@ fn gradient_rect(
 
 /// Draws a classic 2-pixel raised/sunken bevel, a flat Metro border, or a soft
 /// rounded border depending on the active theme.
-pub fn paint_bevel(painter: &egui::Painter, rect: Rect, raised: bool) {
-    let p = palette_now();
+pub fn paint_bevel(painter: &egui::Painter, rect: Rect, raised: bool, theme: Theme) {
+    let p = palette(theme);
     match p.bevel {
         BevelStyle::Classic => {
             let (top_left_outer, bottom_right_outer, top_left_inner, bottom_right_inner) = if raised
@@ -827,32 +792,15 @@ pub fn paint_bevel(painter: &egui::Painter, rect: Rect, raised: bool) {
     }
 }
 
-/// A filled, beveled container. `raised = false` gives a sunken well suitable
-/// for logs, list boxes and text areas.
-pub fn bevel_frame<R>(
-    ui: &mut egui::Ui,
-    raised: bool,
-    add_contents: impl FnOnce(&mut egui::Ui) -> R,
-) -> egui::InnerResponse<R> {
-    let p = palette_now();
-    let fill = if raised { p.face } else { p.well };
-    let frame = egui::Frame::none()
-        .fill(fill)
-        .inner_margin(egui::Margin::same(5.0));
-    let inner = frame.show(ui, add_contents);
-    paint_bevel(ui.painter(), inner.response.rect, raised);
-    inner
-}
-
 /// Section container. Every layout family composes it differently:
 /// etched 98 box, Aero card, Metro accent header, Windows 10 accent card or
 /// a rounded Windows 11 card with the title above it.
 pub fn group_box<R>(
     ui: &mut egui::Ui,
+    theme: Theme,
     title: &str,
     add_contents: impl FnOnce(&mut egui::Ui) -> R,
 ) -> egui::InnerResponse<R> {
-    let theme = current_theme();
     let p = palette(theme);
 
     if p.layout == LayoutStyle::Cards {
@@ -993,15 +941,19 @@ pub fn group_box<R>(
 }
 
 /// Theme-aware caption strip used for the main window and internal panels.
-pub fn title_bar(ui: &mut egui::Ui, title: &str) {
-    title_bar_with_icon(ui, title, None);
+pub fn title_bar(ui: &mut egui::Ui, theme: Theme, title: &str) {
+    title_bar_with_icon(ui, theme, title, None);
 }
 
 /// Caption strip that shows the launcher mascot instead of the generic "O"
 /// badge. The icon is optional so internal panels and previews keep working
 /// without a texture.
-pub fn title_bar_with_icon(ui: &mut egui::Ui, title: &str, texture: Option<&egui::TextureHandle>) {
-    let theme = current_theme();
+pub fn title_bar_with_icon(
+    ui: &mut egui::Ui,
+    theme: Theme,
+    title: &str,
+    texture: Option<&egui::TextureHandle>,
+) {
     let p = palette(theme);
     let width = ui.available_width().max(32.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, p.title_height), Sense::hover());
@@ -1180,11 +1132,11 @@ fn paint_title_icon(
 /// themes draw a rounded accent track with a circular thumb.
 pub fn slider_u32(
     ui: &mut egui::Ui,
+    theme: Theme,
     value: &mut u32,
     range: std::ops::RangeInclusive<u32>,
     width: f32,
 ) -> Response {
-    let theme = current_theme();
     let p = palette(theme);
     let (rect, mut response) =
         ui.allocate_exact_size(Vec2::new(width.max(80.0), 22.0), Sense::click_and_drag());
@@ -1221,7 +1173,7 @@ pub fn slider_u32(
             Pos2::new(rect.right() - 8.0, rect.center().y + 3.0),
         );
         painter.rect_filled(channel, egui::Rounding::ZERO, p.face);
-        paint_bevel(painter, channel, false);
+        paint_bevel(painter, channel, false, theme);
 
         for index in 0..=8 {
             let x = channel.left() + channel.width() * index as f32 / 8.0;
@@ -1250,7 +1202,7 @@ pub fn slider_u32(
             p.face
         };
         painter.rect_filled(thumb_rect, egui::Rounding::ZERO, fill);
-        paint_bevel(painter, thumb_rect, true);
+        paint_bevel(painter, thumb_rect, true, theme);
     } else {
         let channel = Rect::from_center_size(
             rect.center(),
@@ -1294,11 +1246,11 @@ pub fn slider_u32(
 /// Push button. `desired_size = None` sizes to the label.
 pub fn button_sized(
     ui: &mut egui::Ui,
+    theme: Theme,
     text: &str,
     desired_size: Option<Vec2>,
     enabled: bool,
 ) -> Response {
-    let theme = current_theme();
     let p = palette(theme);
     let galley = ui
         .painter()
@@ -1328,7 +1280,7 @@ pub fn button_sized(
     match p.bevel {
         BevelStyle::Classic => {
             painter.rect_filled(rect, egui::Rounding::ZERO, fill);
-            paint_bevel(painter, rect, !pressed);
+            paint_bevel(painter, rect, !pressed, theme);
         }
         BevelStyle::Flat | BevelStyle::Soft => {
             let rounding = egui::Rounding::same(p.button_rounding);
@@ -1373,8 +1325,8 @@ pub fn button_sized(
     response
 }
 
-pub fn button(ui: &mut egui::Ui, text: &str, enabled: bool) -> Response {
-    button_sized(ui, text, None, enabled)
+pub fn button(ui: &mut egui::Ui, theme: Theme, text: &str, enabled: bool) -> Response {
+    button_sized(ui, theme, text, None, enabled)
 }
 
 /// Accent-filled primary action ("Играть", "Далее", "Опубликовать"). Classic
@@ -1382,13 +1334,14 @@ pub fn button(ui: &mut egui::Ui, text: &str, enabled: bool) -> Response {
 /// call to action so the main action is visually obvious.
 pub fn primary_button_sized(
     ui: &mut egui::Ui,
+    theme: Theme,
     text: &str,
     desired_size: Option<Vec2>,
     enabled: bool,
 ) -> Response {
-    let p = palette_now();
+    let p = palette(theme);
     if p.layout == LayoutStyle::Classic {
-        return button_sized(ui, text, desired_size, enabled);
+        return button_sized(ui, theme, text, desired_size, enabled);
     }
 
     let galley = ui
@@ -1458,10 +1411,6 @@ pub fn primary_button_sized(
     response
 }
 
-pub fn primary_button(ui: &mut egui::Ui, text: &str, enabled: bool) -> Response {
-    primary_button_sized(ui, text, None, enabled)
-}
-
 fn draw_check(painter: &egui::Painter, rect: Rect, color: Color32, width: f32) {
     let a = rect.left_bottom() + Vec2::new(rect.width() * 0.18, -rect.height() * 0.38);
     let b = rect.center_bottom() + Vec2::new(-rect.width() * 0.06, -rect.height() * 0.12);
@@ -1477,8 +1426,14 @@ pub fn check_mark(painter: &egui::Painter, rect: Rect, color: Color32) {
 }
 
 /// Checkbox with a sunken classic square or an accent-filled modern box.
-pub fn checkbox(ui: &mut egui::Ui, checked: &mut bool, text: &str, enabled: bool) -> Response {
-    let p = palette_now();
+pub fn checkbox(
+    ui: &mut egui::Ui,
+    theme: Theme,
+    checked: &mut bool,
+    text: &str,
+    enabled: bool,
+) -> Response {
+    let p = palette(theme);
     let classic = p.bevel == BevelStyle::Classic;
     let galley = ui
         .painter()
@@ -1500,7 +1455,7 @@ pub fn checkbox(ui: &mut egui::Ui, checked: &mut bool, text: &str, enabled: bool
 
     if classic {
         painter.rect_filled(box_rect, egui::Rounding::ZERO, p.well);
-        paint_bevel(painter, box_rect, false);
+        paint_bevel(painter, box_rect, false, theme);
         if *checked {
             draw_check(
                 painter,
@@ -1556,8 +1511,7 @@ pub fn checkbox(ui: &mut egui::Ui, checked: &mut bool, text: &str, enabled: bool
 
 /// Theme-aware progress bar: segmented navy/green bars for the classic themes,
 /// a continuous rounded accent fill for Metro and Windows 11.
-pub fn progress_bar(ui: &mut egui::Ui, fraction: f32, text: &str) {
-    let theme = current_theme();
+pub fn progress_bar(ui: &mut egui::Ui, theme: Theme, fraction: f32, text: &str) {
     let p = palette(theme);
     let width = ui.available_width().max(80.0);
     let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 20.0), Sense::hover());
@@ -1567,7 +1521,7 @@ pub fn progress_bar(ui: &mut egui::Ui, fraction: f32, text: &str) {
     match theme {
         Theme::Win98 => {
             painter.rect_filled(rect, egui::Rounding::ZERO, p.face);
-            paint_bevel(painter, rect, false);
+            paint_bevel(painter, rect, false, theme);
 
             let inner = rect.shrink(3.0);
             painter.rect_filled(inner, egui::Rounding::ZERO, p.face);
@@ -1575,7 +1529,7 @@ pub fn progress_bar(ui: &mut egui::Ui, fraction: f32, text: &str) {
         }
         Theme::Win7 => {
             painter.rect_filled(rect, egui::Rounding::ZERO, p.face);
-            paint_bevel(painter, rect, false);
+            paint_bevel(painter, rect, false, theme);
 
             let inner = rect.shrink(3.0);
             painter.rect_filled(inner, egui::Rounding::ZERO, p.well);
@@ -1645,91 +1599,6 @@ fn draw_segments(
             painter.rect_filled(gloss, egui::Rounding::ZERO, Color32::from_white_alpha(80));
         }
     }
-}
-
-/// One-pixel separator, etched in the classic theme and subtle elsewhere.
-pub fn separator(ui: &mut egui::Ui) {
-    let p = palette_now();
-    let width = ui.available_width().max(8.0);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, 2.0), Sense::hover());
-    let painter = ui.painter();
-    painter.line_segment(
-        [rect.left_center(), rect.right_center()],
-        Stroke::new(1.0_f32, p.border),
-    );
-    if p.bevel == BevelStyle::Classic {
-        painter.line_segment(
-            [
-                rect.left_center() + Vec2::new(0.0, 1.0),
-                rect.right_center() + Vec2::new(0.0, 1.0),
-            ],
-            Stroke::new(1.0_f32, p.bevel_light),
-        );
-    }
-}
-
-/// Small square caption button used by custom title bars. The close glyph gets
-/// the familiar red hover on modern Windows themes.
-pub fn caption_button(ui: &mut egui::Ui, text: &str) -> Response {
-    let theme = current_theme();
-    let p = palette(theme);
-    let (rect, response) = ui.allocate_exact_size(Vec2::new(17.0, 15.0), Sense::click());
-    let hovered = response.hovered();
-    let pressed = response.is_pointer_button_down_on();
-    let is_close = matches!(text, "×" | "x" | "X");
-    let painter = ui.painter();
-
-    if p.bevel == BevelStyle::Classic {
-        painter.rect_filled(
-            rect,
-            egui::Rounding::ZERO,
-            if pressed {
-                p.button_pressed
-            } else if hovered {
-                p.button_hover
-            } else {
-                p.button
-            },
-        );
-        paint_bevel(painter, rect, !pressed);
-        painter.text(
-            rect.center()
-                + if pressed {
-                    Vec2::new(1.0, 1.0)
-                } else {
-                    Vec2::ZERO
-                },
-            Align2::CENTER_CENTER,
-            text,
-            font(11.0),
-            p.text,
-        );
-    } else {
-        let fill = if hovered && is_close {
-            p.error
-        } else if pressed && is_close {
-            p.accent_pressed
-        } else if pressed {
-            p.button_pressed
-        } else if hovered {
-            p.button_hover
-        } else {
-            Color32::TRANSPARENT
-        };
-        painter.rect_filled(rect, egui::Rounding::same(p.button_rounding.min(4.0)), fill);
-        painter.text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            text,
-            font(11.0),
-            if hovered && is_close {
-                Color32::WHITE
-            } else {
-                p.text
-            },
-        );
-    }
-    response
 }
 
 #[cfg(test)]

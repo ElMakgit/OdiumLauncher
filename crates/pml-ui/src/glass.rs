@@ -85,6 +85,19 @@ struct Snapshot {
 }
 
 impl Backdrop {
+    /// An inert backdrop for opaque themes: no screenshot is taken and no blur
+    /// worker or GPU texture is allocated.
+    pub fn empty() -> Self {
+        Self {
+            rx: None,
+            texture: None,
+            origin_x: 0,
+            origin_y: 0,
+            width: 0,
+            height: 0,
+        }
+    }
+
     /// Grabs the screen right now and starts blurring it in the background.
     /// Call this before creating the launcher window.
     pub fn capture_now() -> Self {
@@ -116,6 +129,30 @@ impl Backdrop {
         }
 
         backdrop
+    }
+
+    /// Recaptures the desktop after a live switch to the glass theme. The
+    /// launcher window is hidden for a moment so the snapshot does not contain
+    /// the launcher itself.
+    pub fn recapture(&mut self, hwnd: Option<isize>) {
+        #[cfg(windows)]
+        if let Some(hwnd) = hwnd {
+            use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOW};
+
+            let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
+            // SAFETY: ShowWindow only toggles this window's visibility.
+            unsafe {
+                ShowWindow(hwnd, SW_HIDE);
+            }
+            std::thread::sleep(Duration::from_millis(140));
+            *self = Self::capture_now();
+            // SAFETY: restoring the window that was just hidden.
+            unsafe {
+                ShowWindow(hwnd, SW_SHOW);
+            }
+            return;
+        }
+        *self = Self::capture_now();
     }
 
     /// Uploads the blurred snapshot once the worker finishes. Safe to call on
@@ -181,75 +218,17 @@ impl Backdrop {
 #[cfg(windows)]
 fn capture_screen() -> Option<Snapshot> {
     use core::ffi::c_void;
+    use std::ptr::null_mut;
 
-    #[repr(C)]
-    struct BitmapInfoHeader {
-        size: u32,
-        width: i32,
-        height: i32,
-        planes: u16,
-        bit_count: u16,
-        compression: u32,
-        size_image: u32,
-        x_pels_per_meter: i32,
-        y_pels_per_meter: i32,
-        colors_used: u32,
-        colors_important: u32,
-    }
-
-    #[repr(C)]
-    struct BitmapInfo {
-        header: BitmapInfoHeader,
-        colors: [u32; 1],
-    }
-
-    #[link(name = "user32")]
-    extern "system" {
-        fn GetDC(hwnd: isize) -> isize;
-        fn ReleaseDC(hwnd: isize, hdc: isize) -> i32;
-        fn GetSystemMetrics(index: i32) -> i32;
-    }
-
-    #[link(name = "gdi32")]
-    extern "system" {
-        fn CreateCompatibleDC(hdc: isize) -> isize;
-        fn CreateCompatibleBitmap(hdc: isize, width: i32, height: i32) -> isize;
-        fn SelectObject(hdc: isize, object: isize) -> isize;
-        fn BitBlt(
-            dst: isize,
-            x: i32,
-            y: i32,
-            width: i32,
-            height: i32,
-            src: isize,
-            src_x: i32,
-            src_y: i32,
-            rop: u32,
-        ) -> i32;
-        fn GetDIBits(
-            hdc: isize,
-            bitmap: isize,
-            start: u32,
-            lines: u32,
-            bits: *mut c_void,
-            info: *mut BitmapInfo,
-            usage: u32,
-        ) -> i32;
-        fn DeleteObject(object: isize) -> i32;
-        fn DeleteDC(hdc: isize) -> i32;
-    }
-
-    const SRCCOPY: u32 = 0x00CC_0020;
-    /// Include layered windows (Wallpaper Engine and friends).
-    const CAPTUREBLT: u32 = 0x4000_0000;
-    const DIB_RGB_COLORS: u32 = 0;
-
-    const SM_CXSCREEN: i32 = 0;
-    const SM_CYSCREEN: i32 = 1;
-    const SM_XVIRTUALSCREEN: i32 = 76;
-    const SM_YVIRTUALSCREEN: i32 = 77;
-    const SM_CXVIRTUALSCREEN: i32 = 78;
-    const SM_CYVIRTUALSCREEN: i32 = 79;
+    use windows_sys::Win32::Graphics::Gdi::{
+        BitBlt, CreateCompatibleBitmap, CreateCompatibleDC, DeleteDC, DeleteObject, GetDC,
+        GetDIBits, ReleaseDC, SelectObject, BITMAPINFO, BITMAPINFOHEADER, BI_RGB, CAPTUREBLT,
+        DIB_RGB_COLORS, RGBQUAD, SRCCOPY,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetSystemMetrics, SM_CXSCREEN, SM_CXVIRTUALSCREEN, SM_CYSCREEN, SM_CYVIRTUALSCREEN,
+        SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    };
 
     let (origin_x, origin_y, width, height) = unsafe {
         let virtual_width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
@@ -275,22 +254,22 @@ fn capture_screen() -> Option<Snapshot> {
         return None;
     }
 
-    let screen_dc = unsafe { GetDC(0) };
-    if screen_dc == 0 {
+    let screen_dc = unsafe { GetDC(null_mut()) };
+    if screen_dc.is_null() {
         return None;
     }
     let memory_dc = unsafe { CreateCompatibleDC(screen_dc) };
-    if memory_dc == 0 {
+    if memory_dc.is_null() {
         unsafe {
-            ReleaseDC(0, screen_dc);
+            ReleaseDC(null_mut(), screen_dc);
         }
         return None;
     }
     let bitmap = unsafe { CreateCompatibleBitmap(screen_dc, width, height) };
-    if bitmap == 0 {
+    if bitmap.is_null() {
         unsafe {
             DeleteDC(memory_dc);
-            ReleaseDC(0, screen_dc);
+            ReleaseDC(null_mut(), screen_dc);
         }
         return None;
     }
@@ -312,22 +291,27 @@ fn capture_screen() -> Option<Snapshot> {
 
     let pixel_count = width as usize * height as usize;
     let mut pixels = vec![0u8; pixel_count * 4];
-    let mut info = BitmapInfo {
-        header: BitmapInfoHeader {
-            size: std::mem::size_of::<BitmapInfoHeader>() as u32,
-            width,
+    let mut info = BITMAPINFO {
+        bmiHeader: BITMAPINFOHEADER {
+            biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+            biWidth: width,
             // Negative height requests a top-down buffer.
-            height: -height,
-            planes: 1,
-            bit_count: 32,
-            compression: 0, // BI_RGB
-            size_image: 0,
-            x_pels_per_meter: 0,
-            y_pels_per_meter: 0,
-            colors_used: 0,
-            colors_important: 0,
+            biHeight: -height,
+            biPlanes: 1,
+            biBitCount: 32,
+            biCompression: BI_RGB,
+            biSizeImage: 0,
+            biXPelsPerMeter: 0,
+            biYPelsPerMeter: 0,
+            biClrUsed: 0,
+            biClrImportant: 0,
         },
-        colors: [0],
+        bmiColors: [RGBQUAD {
+            rgbBlue: 0,
+            rgbGreen: 0,
+            rgbRed: 0,
+            rgbReserved: 0,
+        }],
     };
     let scanned_lines = if copied != 0 {
         unsafe {
@@ -336,7 +320,7 @@ fn capture_screen() -> Option<Snapshot> {
                 bitmap,
                 0,
                 height as u32,
-                pixels.as_mut_ptr() as *mut c_void,
+                pixels.as_mut_ptr().cast::<c_void>(),
                 &mut info,
                 DIB_RGB_COLORS,
             )
@@ -346,12 +330,12 @@ fn capture_screen() -> Option<Snapshot> {
     };
 
     unsafe {
-        if old_bitmap != 0 {
+        if !old_bitmap.is_null() {
             SelectObject(memory_dc, old_bitmap);
         }
         DeleteObject(bitmap);
         DeleteDC(memory_dc);
-        ReleaseDC(0, screen_dc);
+        ReleaseDC(null_mut(), screen_dc);
     }
 
     if scanned_lines == 0 {
@@ -466,15 +450,14 @@ fn blur_vertical(src: &[u8], dst: &mut [u8], width: usize, height: usize, radius
 #[cfg(windows)]
 mod imp {
     use core::ffi::c_void;
+    use std::ptr::null;
 
-    #[repr(C)]
-    #[derive(Default)]
-    struct Margins {
-        left: i32,
-        top: i32,
-        right: i32,
-        bottom: i32,
-    }
+    use windows_sys::Win32::Foundation::{HWND, POINT, RECT};
+    use windows_sys::Win32::Graphics::Dwm::{DwmExtendFrameIntoClientArea, DwmSetWindowAttribute};
+    use windows_sys::Win32::Graphics::Gdi::{ClientToScreen, InvalidateRect};
+    use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+    use windows_sys::Win32::UI::Controls::MARGINS;
+    use windows_sys::Win32::UI::WindowsAndMessaging::GetClientRect;
 
     #[repr(C)]
     struct AccentPolicy {
@@ -489,38 +472,6 @@ mod imp {
         attribute: u32,
         data: *mut c_void,
         size_of_data: usize,
-    }
-
-    #[repr(C)]
-    struct Rect {
-        left: i32,
-        top: i32,
-        right: i32,
-        bottom: i32,
-    }
-
-    #[repr(C)]
-    struct Point {
-        x: i32,
-        y: i32,
-    }
-
-    #[link(name = "dwmapi")]
-    extern "system" {
-        fn DwmExtendFrameIntoClientArea(hwnd: isize, margins: *const Margins) -> i32;
-        fn DwmSetWindowAttribute(
-            hwnd: isize,
-            attribute: u32,
-            value: *const c_void,
-            size: u32,
-        ) -> i32;
-    }
-
-    #[link(name = "user32")]
-    extern "system" {
-        fn InvalidateRect(hwnd: isize, rect: *const c_void, erase: i32) -> i32;
-        fn GetClientRect(hwnd: isize, rect: *mut Rect) -> i32;
-        fn ClientToScreen(hwnd: isize, point: *mut Point) -> i32;
     }
 
     /// `DWMWA_SYSTEMBACKDROP_TYPE` from dwmapi.h (Windows 11 22H2+).
@@ -539,12 +490,13 @@ mod imp {
     const ACRYLIC_TINT: u32 = 0x40FF_FFFF;
 
     pub fn set_enabled(hwnd: isize, enabled: bool) {
+        let hwnd = hwnd as HWND;
         if enabled {
-            let margins = Margins {
-                left: -1,
-                top: -1,
-                right: -1,
-                bottom: -1,
+            let margins = MARGINS {
+                cxLeftWidth: -1,
+                cxRightWidth: -1,
+                cyTopHeight: -1,
+                cyBottomHeight: -1,
             };
             let extend = unsafe { DwmExtendFrameIntoClientArea(hwnd, &margins) };
             let backdrop = DWMSBT_TRANSIENTWINDOW;
@@ -577,7 +529,12 @@ mod imp {
                     std::mem::size_of::<i32>() as u32,
                 );
             }
-            let margins = Margins::default();
+            let margins = MARGINS {
+                cxLeftWidth: 0,
+                cxRightWidth: 0,
+                cyTopHeight: 0,
+                cyBottomHeight: 0,
+            };
             unsafe {
                 DwmExtendFrameIntoClientArea(hwnd, &margins);
             }
@@ -585,18 +542,19 @@ mod imp {
         }
 
         unsafe {
-            InvalidateRect(hwnd, std::ptr::null(), 1);
+            InvalidateRect(hwnd, null(), 1);
         }
     }
 
     pub fn client_geometry(hwnd: isize) -> Option<super::ClientGeometry> {
-        let mut rect = Rect {
+        let hwnd = hwnd as HWND;
+        let mut rect = RECT {
             left: 0,
             top: 0,
             right: 0,
             bottom: 0,
         };
-        let mut origin = Point { x: 0, y: 0 };
+        let mut origin = POINT { x: 0, y: 0 };
         unsafe {
             if GetClientRect(hwnd, &mut rect) == 0 || ClientToScreen(hwnd, &mut origin) == 0 {
                 return None;
@@ -615,7 +573,7 @@ mod imp {
         })
     }
 
-    fn accent(hwnd: isize, state: u32, gradient_color: u32) {
+    fn accent(hwnd: HWND, state: u32, gradient_color: u32) {
         let Some(set_composition) = composition_api() else {
             tracing::warn!("SetWindowCompositionAttribute is unavailable; blur stays off");
             return;
@@ -639,27 +597,22 @@ mod imp {
     /// The accent blur API is undocumented and therefore missing from
     /// `user32.lib`; it has to be resolved at runtime by name.
     fn composition_api() -> Option<SetWindowCompositionAttribute> {
-        #[link(name = "kernel32")]
-        extern "system" {
-            fn GetModuleHandleW(name: *const u16) -> isize;
-            fn GetProcAddress(module: isize, name: *const u8) -> *const c_void;
-        }
-
         /// "user32" encoded as UTF-16 with the trailing zero.
         const USER32: [u16; 7] = [0x75, 0x73, 0x65, 0x72, 0x33, 0x32, 0x0000];
 
         let module = unsafe { GetModuleHandleW(USER32.as_ptr()) };
-        if module == 0 {
+        if module.is_null() {
             return None;
         }
         let proc =
-            unsafe { GetProcAddress(module, c"SetWindowCompositionAttribute".as_ptr().cast()) };
-        if proc.is_null() {
-            return None;
-        }
-        Some(unsafe { std::mem::transmute::<*const c_void, SetWindowCompositionAttribute>(proc) })
+            unsafe { GetProcAddress(module, c"SetWindowCompositionAttribute".as_ptr().cast()) }?;
+        Some(unsafe {
+            std::mem::transmute::<unsafe extern "system" fn() -> isize, SetWindowCompositionAttribute>(
+                proc,
+            )
+        })
     }
 
     type SetWindowCompositionAttribute =
-        unsafe extern "system" fn(isize, *mut WindowCompositionAttributeData) -> i32;
+        unsafe extern "system" fn(HWND, *mut WindowCompositionAttributeData) -> i32;
 }

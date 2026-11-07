@@ -73,8 +73,13 @@ pub fn run(
     }
 
     // The snapshot has to be taken before eframe creates the window, otherwise
-    // the launcher would photograph itself.
-    let backdrop = glass::Backdrop::capture_now();
+    // the launcher would photograph itself. Opaque themes never need it, so
+    // they skip the capture (and the blur worker) entirely.
+    let backdrop = if theme == Theme::Win7 {
+        glass::Backdrop::capture_now()
+    } else {
+        glass::Backdrop::empty()
+    };
     let options = eframe::NativeOptions {
         viewport,
         persist_window: false,
@@ -347,11 +352,17 @@ impl LauncherApp {
         if self.theme == theme {
             return;
         }
+        let entering_glass = theme == Theme::Win7;
         self.theme = theme;
         pml_theme::apply(ctx, theme);
         self.store.config_mut().theme = theme;
         if let Err(error) = self.store.save() {
             self.error = Some(format!("Не удалось сохранить config.json: {error}"));
+        }
+        if entering_glass {
+            // The window already exists, so hide it briefly while the desktop
+            // is photographed; otherwise the snapshot would contain the UI.
+            self.backdrop.recapture(self.hwnd);
         }
         ctx.request_repaint();
     }
@@ -713,10 +724,14 @@ impl LauncherApp {
                                 .hint_text("путь к .mrpack или папке с manifest.json"),
                         );
                         ui.horizontal(|ui| {
-                            if pml_theme::button(ui, "Файл…", !self.publisher.busy).clicked() {
+                            if pml_theme::button(ui, self.theme, "Файл…", !self.publisher.busy)
+                                .clicked()
+                            {
                                 pick_file = true;
                             }
-                            if pml_theme::button(ui, "Папка…", !self.publisher.busy).clicked() {
+                            if pml_theme::button(ui, self.theme, "Папка…", !self.publisher.busy)
+                                .clicked()
+                            {
                                 pick_dir = true;
                             }
                         });
@@ -786,7 +801,9 @@ impl LauncherApp {
                                 .desired_width(360.0)
                                 .hint_text("пусто = рядом со сборкой"),
                         );
-                        if pml_theme::button(ui, "Выбрать…", !self.publisher.busy).clicked() {
+                        if pml_theme::button(ui, self.theme, "Выбрать…", !self.publisher.busy)
+                            .clicked()
+                        {
                             pick_output = true;
                         }
                         ui.end_row();
@@ -813,6 +830,7 @@ impl LauncherApp {
                 ui.horizontal(|ui| {
                     if pml_theme::primary_button_sized(
                         ui,
+                        self.theme,
                         "Опубликовать",
                         Some(Vec2::new(140.0, 28.0)),
                         !self.publisher.busy,
@@ -825,17 +843,18 @@ impl LauncherApp {
                         ui.label("Публикация…");
                     }
                     if matches!(self.publisher.result, Some(Ok(_)))
-                        && pml_theme::button(ui, "Открыть папку", true).clicked()
+                        && pml_theme::button(ui, self.theme, "Открыть папку", true).clicked()
                     {
                         open_output = true;
                     }
-                    if pml_theme::button(ui, "Копировать лог", true).clicked() {
+                    if pml_theme::button(ui, self.theme, "Копировать лог", true).clicked() {
                         copy_log = true;
                     }
                 });
 
                 pml_theme::progress_bar(
                     ui,
+                    self.theme,
                     self.publisher.progress,
                     if self.publisher.busy {
                         "Публикация…"
@@ -845,7 +864,7 @@ impl LauncherApp {
                 );
 
                 ui.add_space(4.0);
-                sunken_well(ui, |ui| {
+                sunken_well(ui, self.theme, |ui| {
                     egui::ScrollArea::vertical()
                         .max_height(170.0)
                         .stick_to_bottom(true)
@@ -864,7 +883,7 @@ impl LauncherApp {
                 });
 
                 if let Some(Err(error)) = &self.publisher.result {
-                    ui.colored_label(pml_theme::error_color(), error);
+                    ui.colored_label(pml_theme::error_color(self.theme), error);
                 }
             });
 
@@ -937,11 +956,11 @@ impl LauncherApp {
             .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
             .frame(
                 egui::Frame::none()
-                    .fill(pml_theme::face())
+                    .fill(pml_theme::face(self.theme))
                     .inner_margin(egui::Margin::same(4.0)),
             )
             .show(ctx, |ui| {
-                pml_theme::title_bar(ui, "Помощник Байт — добро пожаловать!");
+                pml_theme::title_bar(ui, self.theme, "Помощник Байт — добро пожаловать!");
                 ui.add_space(8.0);
                 ui.horizontal_top(|ui| {
                     draw_assistant(ui, ctx.input(|input| input.time));
@@ -978,13 +997,14 @@ impl LauncherApp {
                 ui.add_space(8.0);
                 ui.separator();
                 ui.horizontal(|ui| {
-                    if pml_theme::button(ui, "Пропустить", true).clicked() {
+                    if pml_theme::button(ui, self.theme, "Пропустить", true).clicked() {
                         action = Some(WelcomeAction::Skip);
                     }
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         let last = self.welcome.step + 1 == WELCOME_TITLES.len();
                         if pml_theme::primary_button_sized(
                             ui,
+                            self.theme,
                             if last { "Готово" } else { "Далее" },
                             Some(Vec2::new(100.0, 26.0)),
                             true,
@@ -1000,6 +1020,7 @@ impl LauncherApp {
                         if self.welcome.step > 0
                             && pml_theme::button_sized(
                                 ui,
+                                self.theme,
                                 "Назад",
                                 Some(Vec2::new(100.0, 26.0)),
                                 true,
@@ -1236,7 +1257,7 @@ impl LauncherApp {
         if sources.len() <= 1 {
             return;
         }
-        pml_theme::group_box(ui, "Сборка", |ui| {
+        pml_theme::group_box(ui, self.theme, "Сборка", |ui| {
             let mut clicked = None;
             for source in &sources {
                 let selected = source.id == self.source_id;
@@ -1246,14 +1267,14 @@ impl LauncherApp {
                 if selected {
                     painter.rect_filled(
                         rect,
-                        egui::Rounding::same(pml_theme::row_rounding()),
-                        pml_theme::selection_color(),
+                        egui::Rounding::same(pml_theme::row_rounding(self.theme)),
+                        pml_theme::selection_color(self.theme),
                     );
                 } else if response.hovered() {
                     painter.rect_filled(
                         rect,
-                        egui::Rounding::same(pml_theme::row_rounding()),
-                        pml_theme::row_hover_color(),
+                        egui::Rounding::same(pml_theme::row_rounding(self.theme)),
+                        pml_theme::row_hover_color(self.theme),
                     );
                 }
                 painter.text(
@@ -1262,9 +1283,9 @@ impl LauncherApp {
                     &source.name,
                     pml_theme::font(12.0),
                     if selected {
-                        pml_theme::selection_text_color()
+                        pml_theme::selection_text_color(self.theme)
                     } else {
-                        pml_theme::text_color()
+                        pml_theme::text_color(self.theme)
                     },
                 );
                 if response.clicked() {
@@ -1278,7 +1299,7 @@ impl LauncherApp {
     }
 
     fn draw_manifest_info(&mut self, ui: &mut egui::Ui) {
-        pml_theme::group_box(ui, "Сборка", |ui| {
+        pml_theme::group_box(ui, self.theme, "Сборка", |ui| {
             if let Some(manifest) = &self.manifest {
                 ui.label(format!("Название: {}", manifest.name));
                 if !manifest.version.is_empty() {
@@ -1301,13 +1322,13 @@ impl LauncherApp {
                     ));
                 }
             } else if let Some(error) = &self.manifest_error {
-                ui.colored_label(pml_theme::error_color(), "Манифест недоступен");
+                ui.colored_label(pml_theme::error_color(self.theme), "Манифест недоступен");
                 ui.label(RichText::new(error).small());
             } else {
                 ui.label("Проверка сборки…");
             }
             ui.add_space(4.0);
-            if pml_theme::button(ui, "Проверить обновления", !self.busy).clicked()
+            if pml_theme::button(ui, self.theme, "Проверить обновления", !self.busy).clicked()
             {
                 self.refresh_manifest();
             }
@@ -1315,7 +1336,7 @@ impl LauncherApp {
     }
 
     fn draw_player(&mut self, ui: &mut egui::Ui) {
-        pml_theme::group_box(ui, "Игрок и параметры", |ui| {
+        pml_theme::group_box(ui, self.theme, "Игрок и параметры", |ui| {
             ui.horizontal(|ui| {
                 ui.label("Ник:");
                 let response = ui.add(
@@ -1332,7 +1353,7 @@ impl LauncherApp {
                     ui.label(RichText::new("3–16 символов: A–Z, a–z, 0–9, _").small());
                 }
                 Err(error) => {
-                    ui.colored_label(pml_theme::error_color(), error.to_string());
+                    ui.colored_label(pml_theme::error_color(self.theme), error.to_string());
                 }
             }
 
@@ -1348,7 +1369,8 @@ impl LauncherApp {
 
             let half_ram = (self.total_ram_mb / 2).max(1024).min(self.max_xmx);
             let mut auto = self.auto_xmx;
-            if pml_theme::checkbox(ui, &mut auto, "Авто: ровно половина ОЗУ", true).changed()
+            if pml_theme::checkbox(ui, self.theme, &mut auto, "Авто: ровно половина ОЗУ", true)
+                .changed()
             {
                 self.auto_xmx = auto;
                 if auto {
@@ -1363,12 +1385,18 @@ impl LauncherApp {
 
             ui.horizontal(|ui| {
                 ui.label("Xms:");
-                pml_theme::slider_u32(ui, &mut self.xms, 512..=self.max_xmx, 170.0);
+                pml_theme::slider_u32(ui, self.theme, &mut self.xms, 512..=self.max_xmx, 170.0);
                 ui.label(format!("{} МБ", self.xms));
             });
             ui.horizontal(|ui| {
                 ui.label("Xmx:");
-                let response = pml_theme::slider_u32(ui, &mut self.xmx, 1024..=self.max_xmx, 170.0);
+                let response = pml_theme::slider_u32(
+                    ui,
+                    self.theme,
+                    &mut self.xmx,
+                    1024..=self.max_xmx,
+                    170.0,
+                );
                 if response.changed() {
                     // An explicit slider movement opts out of the automatic
                     // half-of-RAM default, otherwise the next frame would snap
@@ -1383,7 +1411,13 @@ impl LauncherApp {
 
             ui.add_space(3.0);
             let mut close = self.close_on_start;
-            pml_theme::checkbox(ui, &mut close, "Закрывать лаунчер после запуска", true);
+            pml_theme::checkbox(
+                ui,
+                self.theme,
+                &mut close,
+                "Закрывать лаунчер после запуска",
+                true,
+            );
             if close != self.close_on_start {
                 self.close_on_start = close;
             }
@@ -1404,13 +1438,13 @@ impl LauncherApp {
 
     fn draw_log(&mut self, ui: &mut egui::Ui) {
         ui.add_space(6.0);
-        pml_theme::group_box(ui, "Журнал", |ui| {
-            let log_height = if pml_theme::current_theme() == Theme::Win98 {
+        pml_theme::group_box(ui, self.theme, "Журнал", |ui| {
+            let log_height = if self.theme == Theme::Win98 {
                 150.0
             } else {
                 132.0
             };
-            sunken_well(ui, |ui| {
+            sunken_well(ui, self.theme, |ui| {
                 egui::ScrollArea::vertical()
                     .max_height(log_height)
                     .stick_to_bottom(true)
@@ -1420,7 +1454,7 @@ impl LauncherApp {
                             ui.label(
                                 RichText::new("Здесь появятся строки лога игры.")
                                     .italics()
-                                    .color(pml_theme::muted_color()),
+                                    .color(pml_theme::muted_color(self.theme)),
                             );
                         } else {
                             // A single selectable label keeps selection working
@@ -1434,10 +1468,11 @@ impl LauncherApp {
             });
             ui.add_space(3.0);
             ui.horizontal(|ui| {
-                if pml_theme::button(ui, "Папка логов", true).clicked() {
+                if pml_theme::button(ui, self.theme, "Папка логов", true).clicked() {
                     open_path(&self.paths.logs_dir());
                 }
-                if pml_theme::button(ui, "Копировать", !self.log_lines.is_empty()).clicked()
+                if pml_theme::button(ui, self.theme, "Копировать", !self.log_lines.is_empty())
+                    .clicked()
                 {
                     ui.ctx().copy_text(self.log_lines.join("\r\n"));
                 }
@@ -1464,17 +1499,17 @@ impl LauncherApp {
                 ui.label(RichText::new("Тема оформления").strong());
                 ui.add_space(6.0);
 
-                pml_theme::group_box(ui, "Оформление", |ui| {
+                pml_theme::group_box(ui, self.theme, "Оформление", |ui| {
                     for theme in Theme::ALL {
                         let selected = self.theme == theme;
                         let (rect, response) = ui.allocate_exact_size(
                             Vec2::new(ui.available_width(), 44.0),
                             Sense::click(),
                         );
-                        let current = pml_theme::palette_now();
+                        let current = pml_theme::palette(self.theme);
                         let preview = pml_theme::palette(theme);
                         let painter = ui.painter();
-                        let rounding = egui::Rounding::same(pml_theme::row_rounding());
+                        let rounding = egui::Rounding::same(pml_theme::row_rounding(self.theme));
 
                         if selected {
                             painter.rect_filled(rect, rounding, current.selection);
@@ -1598,8 +1633,14 @@ impl LauncherApp {
 
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    if pml_theme::button_sized(ui, "Закрыть", Some(Vec2::new(100.0, 26.0)), true)
-                        .clicked()
+                    if pml_theme::button_sized(
+                        ui,
+                        self.theme,
+                        "Закрыть",
+                        Some(Vec2::new(100.0, 26.0)),
+                        true,
+                    )
+                    .clicked()
                     {
                         close_clicked = true;
                     }
@@ -1628,7 +1669,9 @@ impl LauncherApp {
             .show(ctx, |ui| {
                 ui.label(message);
                 ui.add_space(6.0);
-                if pml_theme::button_sized(ui, "OK", Some(Vec2::new(90.0, 24.0)), true).clicked() {
+                if pml_theme::button_sized(ui, self.theme, "OK", Some(Vec2::new(90.0, 24.0)), true)
+                    .clicked()
+                {
                     ok_clicked = true;
                 }
             });
@@ -1638,7 +1681,7 @@ impl LauncherApp {
     }
 
     fn draw_bottom(&mut self, ui: &mut egui::Ui) {
-        pml_theme::progress_bar(ui, self.progress, &self.status);
+        pml_theme::progress_bar(ui, self.theme, self.progress, &self.status);
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             let label = if self.busy {
@@ -1650,6 +1693,7 @@ impl LauncherApp {
             };
             if pml_theme::primary_button_sized(
                 ui,
+                self.theme,
                 label,
                 Some(Vec2::new(150.0, 30.0)),
                 !self.busy && !self.game_running,
@@ -1659,14 +1703,14 @@ impl LauncherApp {
                 self.start_launch();
             }
 
-            if self.busy && pml_theme::button(ui, "Отмена", true).clicked() {
+            if self.busy && pml_theme::button(ui, self.theme, "Отмена", true).clicked() {
                 if let Some(cancel) = &self.cancel {
                     cancel.store(true, Ordering::SeqCst);
                 }
                 self.status = "Отмена…".to_owned();
             }
 
-            if pml_theme::button(ui, "Папка сборки", true).clicked() {
+            if pml_theme::button(ui, self.theme, "Папка сборки", true).clicked() {
                 if let Ok(directory) = self.paths.instance_dir(&self.source_id) {
                     open_path(&directory);
                 }
@@ -1675,13 +1719,13 @@ impl LauncherApp {
                 if let Some(java) = &self.java {
                     ui.label(RichText::new(format!("Java {}", java.major)).small());
                 }
-                if pml_theme::button(ui, "Издатель", true).clicked() {
+                if pml_theme::button(ui, self.theme, "Издатель", true).clicked() {
                     self.publisher.open = true;
                 }
-                if pml_theme::button(ui, "Настройки", true).clicked() {
+                if pml_theme::button(ui, self.theme, "Настройки", true).clicked() {
                     self.settings_open = true;
                 }
-                if pml_theme::button(ui, "?", true)
+                if pml_theme::button(ui, self.theme, "?", true)
                     .on_hover_text("Показать приветствие")
                     .clicked()
                 {
@@ -1702,7 +1746,7 @@ impl eframe::App for LauncherApp {
                 self.backdrop.paint(ctx, hwnd);
             }
         }
-        pml_theme::sync_scale(ctx);
+        pml_theme::sync_scale(ctx, self.theme);
         if !self.auto_refreshed {
             self.auto_refreshed = true;
             self.refresh_manifest();
@@ -1711,12 +1755,13 @@ impl eframe::App for LauncherApp {
         self.poll_publisher(ctx);
 
         egui::TopBottomPanel::top("pml_title")
-            .exact_height(pml_theme::title_bar_height())
-            .frame(egui::Frame::none().fill(pml_theme::face()))
+            .exact_height(pml_theme::title_bar_height(self.theme))
+            .frame(egui::Frame::none().fill(pml_theme::face(self.theme)))
             .show(ctx, |ui| {
                 pml_theme::title_bar_with_icon(
                     ui,
-                    "Odium Launcher — портативный лаунчер Minecraft",
+                    self.theme,
+                    "Odium Launcher",
                     self.dog_texture.as_ref(),
                 );
             });
@@ -1725,7 +1770,7 @@ impl eframe::App for LauncherApp {
             .exact_height(84.0)
             .frame(
                 egui::Frame::none()
-                    .fill(pml_theme::face())
+                    .fill(pml_theme::face(self.theme))
                     .inner_margin(egui::Margin::same(8.0)),
             )
             .show(ctx, |ui| self.draw_bottom(ui));
@@ -1733,7 +1778,7 @@ impl eframe::App for LauncherApp {
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::none()
-                    .fill(pml_theme::panel_color())
+                    .fill(pml_theme::panel_color(self.theme))
                     .inner_margin(egui::Margin::same(8.0)),
             )
             .show(ctx, |ui| {
@@ -1778,13 +1823,17 @@ impl eframe::App for LauncherApp {
     }
 }
 
-fn sunken_well<R>(ui: &mut egui::Ui, add_contents: impl FnOnce(&mut egui::Ui) -> R) -> R {
+fn sunken_well<R>(
+    ui: &mut egui::Ui,
+    theme: Theme,
+    add_contents: impl FnOnce(&mut egui::Ui) -> R,
+) -> R {
     let inner = egui::Frame::none()
-        .fill(pml_theme::well_color())
-        .rounding(egui::Rounding::same(pml_theme::well_rounding()))
+        .fill(pml_theme::well_color(theme))
+        .rounding(egui::Rounding::same(pml_theme::well_rounding(theme)))
         .inner_margin(egui::Margin::same(4.0))
         .show(ui, add_contents);
-    pml_theme::paint_bevel(ui.painter(), inner.response.rect, false);
+    pml_theme::paint_bevel(ui.painter(), inner.response.rect, false, theme);
     inner.inner
 }
 
