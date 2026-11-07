@@ -1,0 +1,32 @@
+#Create Warnautics — detonation behaviour
+[detonation]
+	#Allow a Warnautics bomb blast to cook off other Warnautics bombs.
+	#false (default): a released bomb can never destroy the payload still
+	#carried by the aircraft, so tightly packed bomb bays are safe.
+	#true: pre-1.0.2 behaviour — one hit detonates the whole rack.
+	friendlyChainDetonation = false
+	#Allow non-Warnautics explosions (TNT, cannon shells, creepers), fire
+	#and lava to cook off placed bombs. This is what makes an ammunition
+	#hit on a bomber dangerous, and is unrelated to friendly chaining.
+	externalChainDetonation = true
+
+#Create Warnautics — performance limits
+[performance]
+	#Maximum blocks a single detonation may change. Carpet bombing with
+	#unbounded craters is the main cause of client stalls and out-of-memory
+	#crashes, because every changed block is meshed again by the renderer.
+	# Default: 2600
+	# Range: 128 ~ 60000
+	maxBlocksPerDetonation = 2600
+	#Multiplier on the amount of blast particles and flash packets sent to
+	#clients. Lower this on servers where players run heavy shader setups.
+	# Default: 1.0
+	# Range: 0.0 ~ 1.0
+	blastFxScale = 1.0
+	#Multiplier on the release impulse that throws a bomb onto its arc.
+	#The impulse is forward along the bomb's nose plus a slight downward
+	#bias, and never has an upward component at any value.
+	#Set to 0.0 for a pure drop that only inherits carrier velocity.
+	# Default: 1.0
+	# Range: 0.0 ~ 3.0
+	releaseImpulse = 1.0

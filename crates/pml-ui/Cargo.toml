@@ -1,0 +1,26 @@
+[package]
+name = "pml-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Windows 98 style egui launcher UI and orchestration"
+
+[dependencies]
+pml-config = { path = "../pml-config" }
+pml-downloader = { path = "../pml-downloader" }
+pml-java = { path = "../pml-java" }
+pml-launcher = { path = "../pml-launcher" }
+pml-loader = { path = "../pml-loader" }
+pml-minecraft = { path = "../pml-minecraft" }
+pml-modpack = { path = "../pml-modpack" }
+pml-publish = { path = "../pml-publish" }
+pml-theme = { path = "../pml-theme" }
+eframe.workspace = true
+egui.workspace = true
+rfd.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+windows-sys.workspace = true

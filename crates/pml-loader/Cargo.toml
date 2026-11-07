@@ -1,0 +1,20 @@
+[package]
+name = "pml-loader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Fabric/Quilt profile installation and Forge/NeoForge headless installers"
+
+[dependencies]
+pml-config = { path = "../pml-config" }
+pml-downloader = { path = "../pml-downloader" }
+pml-minecraft = { path = "../pml-minecraft" }
+serde_json.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

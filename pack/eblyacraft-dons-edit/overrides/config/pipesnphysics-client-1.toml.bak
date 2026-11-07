@@ -1,0 +1,65 @@
+	#Engineer's Goggles readouts for pipes and pumps.
+	[engine.goggles]
+		#Show engine stats (status, fluid, flow, pressure) when looking
+		#at a pipe with Engineer's Goggles.
+		showPipeGoggleInfo = true
+		#Colour the pipes a pump can reach GREEN while looking at it with
+		#Engineer's Goggles: the run from its supply's surface up to the
+		#elevation it can still push to (or draw up from). Pipe past that
+		#limit is left alone, so where the green stops is how far it goes.
+		showPumpReachOverlay = true
+		#Show a sliding arrow through every ONE-WAY fluid valve (its allowed
+		#flow direction) while wearing Engineer's Goggles or holding a wrench.
+		showValveDirectionArrows = true
+		#Keep showing the pump range indicator for a few seconds after
+		#looking away from the pump.
+		preservePumpRangeIndicator = true
+		#How many seconds the pump range indicator lingers after looking away.
+		# Default: 5
+		# Range: 1 ~ 60
+		pumpRangePreserveSeconds = 5
+
+	#In-hand editing of a pipe network.
+	[engine.controls]
+		#Shift + right-click a pipe element (pump, valve, smart fluid pipe, pipe) held in
+		#hand onto another pipe element to replace it in place — the old block's drops are
+		#refunded and one held block is consumed. Handy for editing a run without breaking it
+		#first. (Read on the client, so it only takes effect in singleplayer / on your own
+		#integrated server; a dedicated server always allows the swap.)
+		enablePipeSwap = true
+
+	#Drawing the fluid inside pipes, and running the engine inside Ponder.
+	[engine.rendering]
+		#Draw the fluid inside (glass) pipes. What is drawn is the pipe's REAL stored
+		#content, synced from the server, so the fill always matches the actual fluid
+		#state. Turning this off only hides the fluid on your client - the pipes still
+		#hold and move it.
+		pipeLevelRender = true
+		#Speed multiplier for the in-pipe fluid scroll animation (the level renderer above).
+		#1.0 = default; lower it to calm a fast flow, raise it to make it livelier. Only the
+		#animation speed changes, not the actual fluid transfer.
+		# Default: 1.0
+		# Range: 0.0 ~ 10.0
+		pipeLevelFlowSpeed = 1.0
+		#Run the fluid engine live inside Ponder scenes, so the mod's own physics
+		#(reach bounded by height, siphons, communicating vessels) drive the animation
+		#instead of Create's stock pipe transport. Off = Ponder shows Create's behavior.
+		enablePonderEngine = true
+
+#Client rendering of fluid on Sable sub-levels (inert without Sable).
+[sable]
+
+	#Tilted, wavy fluid surfaces in tanks on a moving sub-level.
+	[sable.fluidPhysics]
+		#Enable tilted fluid rendering in tanks on Sable sub-levels.
+		fluidTiltEnabled = true
+		#Enable wavy fluid surface mesh on Sable sub-levels.
+		fluidWaveMesh = true
+		#Grid resolution for the fluid surface mesh.
+		# Default: 64
+		# Range: 2 ~ 128
+		fluidSurfaceResolution = 64
+		#Show debug wireframe, corner dots, and grid lines on fluid surfaces.
+		fluidDebugRender = false
+		#Hide fluid textures, showing only debug wireframe.
+		fluidHideTexture = false

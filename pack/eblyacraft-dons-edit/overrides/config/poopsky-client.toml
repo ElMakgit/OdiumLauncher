@@ -1,0 +1,6 @@
+#Whether to play the intro animation when entering a PoopSky world for the first time
+introAnimation = true
+#Whether to play the Toilet End Poem before traveling through an End Toilet for the first time
+endAnimation = true
+introText = "poopsky"
+introYear = "2026"

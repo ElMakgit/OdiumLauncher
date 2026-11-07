@@ -1,0 +1,12 @@
+[package]
+name = "pml-theme"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Windows 98 visual theme and widgets for egui"
+
+[dependencies]
+pml-config = { path = "../pml-config" }
+egui.workspace = true
+tracing.workspace = true

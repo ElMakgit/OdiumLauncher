@@ -1,0 +1,16 @@
+#.
+#Whether the camera will zoom out slightly when on high speed trains. If you are sensitive to motion sickness, you may want to disable this.
+enableZoom = true
+#.
+#The value that the train speed is divided by for fov zoom out. Higher values mean less zoom out
+# Default: 15
+# Range: 1 ~ 20
+zoomMod = 15
+#.
+#The modifier used to smooth out the camera zoom out affect on trains. 0.1 will be a very slow transition, 1 will be instant.
+# Default: 0.10000000149011612
+# Range: 0.0 ~ 1.0
+zoomLerpMod = 0.10000000149011612
+#.
+#If Create: Sounds and speakers is installed, whether or not to show 'playing song x' messages and similar
+enableMusicMessages = true

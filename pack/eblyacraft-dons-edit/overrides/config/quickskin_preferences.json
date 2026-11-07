@@ -1,0 +1,19 @@
+{
+  "players": {
+    "4e024259-d362-38c0-bade-954da6538e7f": {
+      "lastSkinId": "sha256-5dcd8a5e7a8f4df809f2064878968a5901868642f424361627dee3ebfcc5a5ea",
+      "lastModelType": "auto",
+      "favorites": {}
+    },
+    "04f95bb4-e3df-4975-9673-8da564ba48dd": {
+      "lastSkinId": "sha256-5dcd8a5e7a8f4df809f2064878968a5901868642f424361627dee3ebfcc5a5ea",
+      "lastModelType": "auto",
+      "favorites": {}
+    },
+    "d2b3befd-ac01-3242-9ed2-a44b86ddd9a3": {
+      "lastSkinId": "sha256-2e06587b509e1497090ab69b00db8ae73808e75609b3bd972c6f72cb91b90feb",
+      "lastModelType": "auto",
+      "favorites": {}
+    }
+  }
+}

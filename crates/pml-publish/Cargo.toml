@@ -1,0 +1,24 @@
+[package]
+name = "pml-publish"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "GitHub publishing for Odium Launcher packs and player distribution builder"
+
+[dependencies]
+pml-config = { path = "../pml-config" }
+pml-downloader = { path = "../pml-downloader" }
+serde.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zip.workspace = true
+futures-util.workspace = true
+base64.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

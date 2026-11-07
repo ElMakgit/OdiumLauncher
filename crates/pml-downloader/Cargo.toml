@@ -1,0 +1,22 @@
+[package]
+name = "pml-downloader"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Async streaming downloader with SHA-1/SHA-256 verification and progress events"
+
+[dependencies]
+reqwest.workspace = true
+tokio.workspace = true
+futures-util.workspace = true
+sha1.workspace = true
+sha2.workspace = true
+hex.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+zip.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

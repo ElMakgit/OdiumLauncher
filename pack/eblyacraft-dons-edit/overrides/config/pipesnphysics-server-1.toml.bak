@@ -1,0 +1,285 @@
+[engine]
+	#Master switch. When false, Create's vanilla pipe transport runs unmodified.
+	enableEngine = true
+
+	#Optional engine behaviors — how open ends, pumps, relays, and the graph
+	#cache act. Toggles (and their tuning), separate from the raw flow numbers.
+	[engine.behaviors]
+		#Let a pump drain a tank from a connection ABOVE the fluid's surface — i.e. pull a
+		#tank down past a side or top pipe instead of stopping once the level drops below it
+		#(as if the pump had a dip tube reaching the bottom). Only applies where a pump is
+		#actively drawing from the tank; plain gravity flow still can't leave an opening above
+		#the waterline. The suction limit still bounds how far the pump can lift.
+		pumpDrainAnyLevel = false
+		#Let an open pipe end draw fluid IN from the world when the network is
+		#under suction (its head sits below the pipe mouth): a self-regenerating source
+		#(a lake), a cauldron, or a finite/hand-placed source block. Unpumped, this
+		#needs a VERTICAL mouth — a sideways one is a spill outlet only, or it would
+		#just reclaim its own spill — but a mouth a RUNNING PUMP pulls on drinks
+		#through any face (a pump cannot spill out of its own suction flank). To keep
+		#a mouth from sucking back what it spilled, a network that spilled from ANY
+		#open end recently will not pull a finite source (lakes/cauldrons are
+		#unaffected).
+		enableOpenEndIntake = true
+		#After an open end on a network spills, how many ticks before that network
+		#may pull a finite source again (the anti-reclaim window). Lakes and cauldrons
+		#ignore this. Larger = safer against flicker on networks that both push and pull.
+		# Default: 20
+		# Range: 0 ~ 200
+		openEndIntakeCooldownTicks = 20
+		#Let an open-ended pipe keep draining fluid OUT even when the space it faces is
+		#already filled by a fluid source block (its own earlier spill, or a natural pool),
+		#instead of backing the network up. The space is already full, so the extra fluid
+		#is DISCARDED. Off by default because it destroys fluid; turn it on for an open end
+		#used as an overflow/drain into a body of fluid.
+		forceOpenEndOutput = false
+		#Automatically detect fluid-handler blocks that are NOT passive tanks — relays
+		#like a docking connector or a flexible hose — and stop equalizing them as
+		#reservoirs. A real tank only changes fill by our transfers; a relay spontaneously
+		#GAINS fluid from its own pairing/cascade (a consumer only ever loses it). A block
+		#type seen gaining fluid on its own several times is treated as a drain-priority
+		#relay endpoint (a one-way source while it holds fluid, a one-way sink while empty),
+		#so it is drained/filled on demand instead of being wrongly held 'balanced'. Override
+		#with the block tags is_reservoir (force normal tank), relay_endpoint (force relay),
+		#sink_only (receive-only), or ignore_fluid_handler (skip); Create tanks and basins
+		#are never demoted.
+		autoDetectRelayHandlers = true
+		#Reuse each pipe network's discovered graph across ticks instead of re-scanning
+		#it from the world every solve. Every edit that can change a network's shape
+		#(break/place, pump flips, valve angles, chunk loads) evicts the cached graph,
+		#and entries expire after a few ticks anyway so event-less edits (pistons,
+		#contraption assembly) are picked up promptly. Also governs the Sable sub-level
+		#pipe-scan cache. Turn off only to rule caching out while debugging odd network
+		#behavior.
+		enableNetworkCache = true
+
+	#The numeric tuning of the hydraulics — how fast, how much, and how high
+	#fluid moves. These set the feel of every network.
+	[engine.flowScaling]
+		#Flow in mB/tick that one pipe segment passes per block of head difference.
+		#Higher values equalize tanks faster and raise throughput everywhere.
+		# Default: 240.0
+		# Range: 0.1 ~ 10000.0
+		pipeConductance = 240.0
+		#How many blocks of straight pipe a run's FITTINGS are worth — the tee it
+		#branches off, its elbows, and the entry and exit at its ends. Real plumbing
+		#loses far more head to fittings than to a few blocks of pipe, so this is what
+		#keeps a short branch from beating a longer one by its length ratio: at a
+		#junction, two branches split their flow as 1/(length + this) each, which at
+		#the default tracks the square-root split of real turbulent pipe flow closely
+		#(2 blocks against 8 splits 65/35, where raw length alone would say 75/25).
+		#Raise it to make pipe length matter even less; 1 restores pure length.
+		# Default: 5.0
+		# Range: 1.0 ~ 64.0
+		pipeFittingLength = 5.0
+		#Blocks of head a pump adds per RPM.
+		#At 0.25, a pump running at 64 RPM can lift fluid 16 blocks.
+		# Default: 0.25
+		# Range: 0.01 ~ 100.0
+		pumpHeadPerRpm = 0.25
+		#Pump throughput in mB/tick per RPM when pumping freely.
+		#Together with pumpHeadPerRpm this defines the pump curve:
+		#flow falls toward zero as the opposing head approaches the pump's head.
+		# Default: 1.0
+		# Range: 0.01 ~ 100.0
+		pumpFlowPerRpm = 1.0
+		#How deep a running pump can start pulling through its own DRY suction line,
+		#as a fraction of the head it pushes with. A pump SUCKS far more weakly than
+		#it pushes: at 0.1 a 16 RPM pump lifts 4 blocks but only draws a dry line down
+		#0.4 blocks below the pipe it opens into, so a supply well under the pump still
+		#has to be primed once by hand (or reached with more RPM). Only ESTABLISHING
+		#costs this; once the line holds fluid the column sustains down to the full
+		#suction limit, and unpowered siphons are governed by that limit alone.
+		#0 = never self-prime (a dry pump above the waterline churns air until primed).
+		# Default: 0.1
+		# Range: 0.0 ~ 1.0
+		pumpPullHeadFraction = 0.1
+		#Hard cap on fluid moved into or out of a single tank or machine per tick, in mB.
+		# Default: 256
+		# Range: 1 ~ 8192
+		maxFlowPerEndpoint = 256
+		#How much fluid one pipe block holds, in mB. Fluid really resides in the pipes:
+		#a starting flow drains the source while the pipe fills, the sink only receives
+		#what exits the pipe, and idle runs settle their contents back into the tanks
+		#they can reach (only real traps - a U-dip below the waterline - keep fluid, and
+		#breaking a pipe spills what it holds). Higher values mean more working volume
+		#and slower visible fronts at a given flow; 0 disables in-pipe volume entirely
+		#(instant endpoint-to-endpoint transfers, as before this feature).
+		# Default: 250
+		# Range: 0 ~ 8000
+		pipeVolumePerCell = 250
+		#How many blocks the head at a pipe's highest point may sit below that point
+		#before the liquid column breaks (the siphon / cavitation limit).
+		# Default: 8.0
+		# Range: 0.0 ~ 256.0
+		suctionLimitBlocks = 8.0
+		#Molten fluids run thinner in an ultrawarm dimension: their viscosity is
+		#divided by this factor there, so they flow that much faster (vanilla
+		#parity: lava spreads 3x faster in the Nether). 1 disables the effect.
+		# Default: 3.0
+		# Range: 1.0 ~ 100.0
+		ultrawarmViscosityThinning = 3.0
+		#Fluids whose registered temperature reaches this many Kelvin count as
+		#MOLTEN for the ultrawarm thinning above (lava is 1300, water 300 — modded
+		#molten metals typically 1000+).
+		# Default: 1000
+		# Range: 0 ~ 100000
+		moltenTemperatureKelvin = 1000
+
+	#The Mechanical Pump run BACKWARDS: dial a pump to TURBINE and fluid
+	#falling through it turns it into a Create generator instead of a
+	#consumer. A turbine is the exact dual of a pump — it SUBTRACTS its rated
+	#head instead of adding it — so it needs a real drop before it passes
+	#anything, and it swallows at most its rated flow.
+	#Its RPM is a fixed tier ON PURPOSE and must never be derived from the
+	#flow: Create breaks a generator whose speed flickers or flips sign, and
+	#the fixed tier is also what caps the power a pump-fed loop can win back.
+	[engine.turbine]
+		#Whether a Mechanical Pump can run backwards as a turbine at all.
+		#A pump placed from now on comes up AUTOMATIC: it pumps while a shaft
+		#drives it and turbines while nothing does. Pumps already built keep
+		#their old behaviour until you dial them.
+		enableHydroTurbine = true
+		#The fixed speed a generating turbine produces, in RPM (a water wheel is 8).
+		# Default: 8.0
+		# Range: 1.0 ~ 256.0
+		turbineRpm = 8.0
+		#Blocks of head a turbine takes out of the line per RPM of its rating.
+		#At 0.25 and 8 RPM a turbine needs a 2-block fall before it turns at all.
+		# Default: 0.25
+		# Range: 0.01 ~ 100.0
+		turbineHeadPerRpm = 0.25
+		#How much a turbine can swallow per RPM of its rating, in mB/tick.
+		#At 8.0 and 8 RPM it passes at most 64 mB/t; a stronger supply backs up.
+		# Default: 8.0
+		# Range: 0.01 ~ 1000.0
+		turbineFlowPerRpm = 8.0
+		#Stress units produced per block of rated fall per mB/tick passed.
+		#A bigger drop drives more water through and earns more; what bounds one
+		#turbine is the piping, not a cap. At 2.0 a pump feeding a turbine breaks
+		#even at every speed, which turns a closed loop into free power, so the
+		#default leaves a factor of two of loss.
+		# Default: 1.0
+		# Range: 0.0 ~ 100.0
+		turbineSuPerPower = 1.0
+
+	#The crank-to-open fluid valve throttle.
+	[engine.valves]
+		#Let a fluid valve throttle its flow by a 0-90 degree angle, cranked by its
+		#shaft or set precisely by a Valve Handle. The angle caps how much flows while
+		#the valve is open (90 = fully open). When false, valves stay plain on/off.
+		enableValveThrottle = true
+		#The valve's opening curve — how its 0-90 degree angle maps to the share of flow
+		#it passes. LINEAR: angle = flow (45 deg passes half; predictable, matches the
+		#goggle %). QUICK_OPENING: reaches most flow early. EQUAL_PERCENTAGE: slow to open,
+		#rushes near full. BALL_VALVE: the lens-shaped bore overlap of a real ball valve
+		#(very restrictive until near open). Only reshapes the knob's feel; the engine's
+		#flow model stays linear.
+		#Allowed Values: LINEAR, QUICK_OPENING, EQUAL_PERCENTAGE, BALL_VALVE
+		valveCharacteristic = "LINEAR"
+		#Let a fluid valve be set to pass fluid ONE WAY (a check valve) via a second
+		#scroll box on its side faces. Default is both ways; one-way blocks reverse
+		#flow in the solve AND at rest (idle levels never leak backward through it).
+		enableValveOneWay = true
+
+#Integration with the Sable physics mod — everything below only does anything
+#when a contraption is an assembled Sable sub-level (inert otherwise).
+[sable]
+	#When an open-ended pipe on a Sable sub-level spills fluid,
+	#place the fluid block in the real world at the projected position.
+	enableOpenEndWorldPlacement = true
+	#Recompute pipe connection state on Sable sub-levels. Sable assembles a
+	#contraption with raw setBlockState (no neighbour update), so a pipe's
+	#connection shape can stay stale and drop real edges — the network then
+	#solves 'no flow' until a manual pipe edit fixes it. This refreshes each
+	#sub-level pipe once so pumps/networks work without the manual poke.
+	enableSubLevelConnectionRefresh = true
+	#Cross-level piping: let an open pipe end draw fluid IN from a block on ANY OTHER
+	#Sable level whose physical bounds overlap the pipe mouth — a contraption drinking
+	#a fluid block on another contraption where the two touch, OR a main-level (dimension)
+	#pipe drinking from a contraption passing over it, OR a contraption drinking the
+	#dimension it overlaps. Uses the same one-way vacuum intake and anti-reclaim guards
+	#as ordinary open-end intake, plus a spatial (broadphase) query per mouth.
+	enableCrossLevelPiping = true
+
+	#Fluid weight and buoyancy on a sub-level (heavier when full, lift from a gas).
+	[sable.tankMass]
+		#Enable dynamic mass for fluid tanks on Sable sub-levels.
+		#Fuller tanks become heavier, affecting sub-level physics.
+		enableDynamicTankMass = true
+		#Mass in kg added per bucket of fluid stored in a tank.
+		# Default: 0.1
+		# Range: 0.001 ~ 100.0
+		fluidMassPerBucket = 0.1
+		#EXPERIMENTAL: settle the fluid's mass toward the low side of the tank by fill
+		#level (a fuller tank sits lower). Off still adds the mass — just at the block
+		#centre — so a tank's weight always shifts the contraption's centre of gravity.
+		experimentalTankCenterOfGravity = true
+		#Let a tank holding a lighter-than-air fluid provide upward LIFT instead of
+		#weight (a gas cell acts like a balloon). Applied as an upward force, never as
+		#negative mass, so it can't destabilise the contraption's mass distribution.
+		enableGasBuoyancy = true
+		#Lift in kg per bucket of a lighter-than-air fluid. Deliberately independent of
+		#the fluid's (sub-zero) density: a gas cell lifts by its fill volume, not by how
+		#far below air its density sits. 0 disables the effect while keeping the toggle on.
+		# Default: 0.1
+		# Range: 0.0 ~ 100.0
+		fluidLiftPerBucket = 0.1
+
+	#Fling fluid outward on a spinning contraption, and reverse-mix separation.
+	[sable.centrifuge]
+		#Fling fluid outward on a spinning Sable contraption: a cell's orbital speed adds
+		#a centrifugal term to its effective elevation, so fluid collects in the faster-moving
+		#(outer) tanks and drains back when the spin stops. Inert on anything not rotating.
+		enableCentrifuge = true
+		#Multiplier on the centrifugal pull. 1.0 is physically scaled (½v²/g); raise it to
+		#make the outward push more aggressive, lower it to soften.
+		# Default: 1.0
+		# Range: 0.0 ~ 100.0
+		centrifugeStrength = 1.0
+		#Reverse-mix separation: a fast-enough spinning tank holding a fluid a centrifuging
+		#recipe accepts is consumed and its component fluids pushed into the other tanks on
+		#the network (which then fling outward). Recipes live in data/<ns>/centrifuging/.
+		enableCentrifugeUnmix = true
+		#Max input fluid (mB) a spinning tank un-mixes per tick.
+		# Default: 100
+		# Range: 1 ~ 100000
+		centrifugeUnmixRate = 100
+		#Minimum orbital speed (m/s) a tank must be moving at before it un-mixes — mount it
+		#off the spin axis and spin fast enough to clear this.
+		# Default: 4.0
+		# Range: 0.0 ~ 1000.0
+		centrifugeUnmixMinSpeed = 4.0
+		#Minimum spin rate (radians/second) the contraption must turn at before the centrifuge
+		#does anything — both the outward push and un-mixing. Unlike orbital speed this is
+		#independent of how far the tanks sit from the axis, so it reads pure spin. 0 disables
+		#the gate (any rotation works). 1 rad/s is about 9.5 RPM, so 3.0 is roughly 29 RPM.
+		# Default: 0.0
+		# Range: 0.0 ~ 1000.0
+		centrifugeMinAngularSpeed = 0.0
+
+	#Slosh fluid opposite the acceleration of an accelerating contraption.
+	[sable.momentum]
+		#Slosh fluid on an ACCELERATING contraption: when its linear velocity changes, fluid is
+		#pushed opposite the acceleration (toward the back when speeding up, forward when braking),
+		#so momentum tilts the fluid surface. The linear counterpart of the centrifuge. Inert at
+		#constant velocity and off a physics sub-level.
+		enableMomentumHead = true
+		#Multiplier on the momentum tilt. 1.0 is physically scaled ((a·r)/g); raise for a stronger
+		#slosh, lower to soften.
+		# Default: 1.0
+		# Range: 0.0 ~ 100.0
+		momentumStrength = 1.0
+		#Minimum acceleration (m/s²) before momentum tilts the fluid at all. 0 uses only the small
+		#internal noise floor; raise it if a jittery ship sloshes when you don't want it to.
+		# Default: 0.0
+		# Range: 0.0 ~ 1000.0
+		momentumMinAccel = 0.0
+
+	#Throwaway sub-level diagnostics.
+	[sable.debug]
+		#DEBUG SPIKE: read a Sable sub-level's rigid-body angular velocity server-side
+		#and action-bar the spin rate (rad/s + RPM), axis, and linear speed to players in
+		#the level. Needs a fluid tank on the contraption (it rides the tank physics tick).
+		#Off by default; a throwaway probe for the centrifuge-recipe investigation.
+		debugSubLevelSpin = false

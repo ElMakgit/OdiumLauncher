@@ -1,0 +1,8 @@
+{
+  "enable_overriding_enchantment_rarity": true,
+  "enable_scaled_items_rarity": true,
+  "enable_rarity_color_override": false,
+  "rarity_color_overrides": {
+    "4": "GOLD"
+  }
+}
