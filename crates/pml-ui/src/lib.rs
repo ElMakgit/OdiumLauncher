@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
-use egui::{Align, Align2, Color32, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
+use egui::{Align, Align2, Layout, Pos2, Rect, RichText, Sense, Stroke, Vec2};
 use pml_config::{
     validate_nick, Config, ConfigStore, PortablePaths, ServerSpec, Source, SourceKind, Theme,
 };
@@ -198,16 +198,6 @@ impl PublisherState {
     }
 }
 
-/// One expanding ring spawned by the pointer on the Windows 7 glass.
-struct Ripple {
-    center: Pos2,
-    born: f64,
-    strength: f32,
-}
-
-/// Seconds a ripple stays visible before it fades out completely.
-const RIPPLE_LIFETIME: f64 = 1.15;
-
 struct LauncherApp {
     paths: PortablePaths,
     store: ConfigStore,
@@ -243,10 +233,6 @@ struct LauncherApp {
     hwnd: Option<isize>,
     backdrop: glass::Backdrop,
     dog_texture: Option<egui::TextureHandle>,
-    ripples: Vec<Ripple>,
-    last_ripple_at: f64,
-    last_ripple_pos: Option<Pos2>,
-    last_drop_ripple_at: f64,
     settings_open: bool,
 }
 
@@ -322,10 +308,6 @@ impl LauncherApp {
             hwnd: None,
             backdrop,
             dog_texture,
-            ripples: Vec::new(),
-            last_ripple_at: f64::NEG_INFINITY,
-            last_ripple_pos: None,
-            last_drop_ripple_at: f64::NEG_INFINITY,
             settings_open: false,
         }
     }
@@ -1659,41 +1641,21 @@ impl LauncherApp {
         pml_theme::progress_bar(ui, self.progress, &self.status);
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            let enabled = !self.busy && !self.game_running;
-            let clicked = if self.theme == Theme::Win7 {
-                // The Aero action is a literal drop of water; keep its caption
-                // short enough to fit inside the bulb.
-                let label = if self.busy {
-                    "Ждите"
-                } else if self.game_running {
-                    "Игра"
-                } else {
-                    "Играть"
-                };
-                let response =
-                    pml_theme::water_drop_button(ui, label, Some(Vec2::new(62.0, 64.0)), enabled);
-                if response.hovered() {
-                    if let Some(pos) = response.hover_pos() {
-                        let now = ui.input(|input| input.time);
-                        if now - self.last_drop_ripple_at > 0.30 {
-                            self.last_drop_ripple_at = now;
-                            self.spawn_ripple(pos, now, 0.8);
-                        }
-                    }
-                }
-                response.clicked()
+            let label = if self.busy {
+                "Подготовка…"
+            } else if self.game_running {
+                "Игра запущена"
             } else {
-                let label = if self.busy {
-                    "Подготовка…"
-                } else if self.game_running {
-                    "Игра запущена"
-                } else {
-                    "Играть"
-                };
-                pml_theme::primary_button_sized(ui, label, Some(Vec2::new(150.0, 30.0)), enabled)
-                    .clicked()
+                "Играть"
             };
-            if clicked {
+            if pml_theme::primary_button_sized(
+                ui,
+                label,
+                Some(Vec2::new(150.0, 30.0)),
+                !self.busy && !self.game_running,
+            )
+            .clicked()
+            {
                 self.start_launch();
             }
 
@@ -1729,108 +1691,6 @@ impl LauncherApp {
             });
         });
     }
-
-    /// Spawns expanding rings when the pointer brushes the glass. Only the
-    /// Windows 7 theme has water; every other theme keeps a dry surface.
-    fn update_ripples(&mut self, ctx: &egui::Context) {
-        if self.theme != Theme::Win7 {
-            self.ripples.clear();
-            self.last_ripple_pos = None;
-            return;
-        }
-        let blocked = self.settings_open
-            || self.publisher.open
-            || self.welcome.open
-            || self.error.is_some()
-            || ctx.memory(|memory| memory.any_popup_open());
-        if blocked {
-            self.ripples.clear();
-            self.last_ripple_pos = None;
-            return;
-        }
-
-        let (pointer, pressed, now) = ctx.input(|input| {
-            (
-                input.pointer.hover_pos(),
-                input.pointer.primary_pressed(),
-                input.time,
-            )
-        });
-        let Some(pos) = pointer else {
-            self.last_ripple_pos = None;
-            self.ripples
-                .retain(|ripple| now - ripple.born < RIPPLE_LIFETIME);
-            return;
-        };
-
-        let moved = self
-            .last_ripple_pos
-            .is_none_or(|last| pos.distance(last) > 20.0);
-        if pressed || (moved && now - self.last_ripple_at > 0.07) {
-            self.spawn_ripple(pos, now, if pressed { 1.0 } else { 0.55 });
-            self.last_ripple_at = now;
-            self.last_ripple_pos = Some(pos);
-        }
-
-        self.ripples
-            .retain(|ripple| now - ripple.born < RIPPLE_LIFETIME);
-    }
-
-    fn spawn_ripple(&mut self, center: Pos2, born: f64, strength: f32) {
-        self.ripples.push(Ripple {
-            center,
-            born,
-            strength,
-        });
-        if self.ripples.len() > 36 {
-            self.ripples.remove(0);
-        }
-    }
-
-    fn draw_ripples(&self, ctx: &egui::Context) {
-        if self.theme != Theme::Win7 || self.ripples.is_empty() {
-            return;
-        }
-        let now = ctx.input(|input| input.time);
-        let painter = ctx.layer_painter(egui::LayerId::new(
-            egui::Order::Foreground,
-            egui::Id::new("pml_water_ripples"),
-        ));
-        for ripple in &self.ripples {
-            let age = (now - ripple.born) as f32;
-            if !(0.0..RIPPLE_LIFETIME as f32).contains(&age) {
-                continue;
-            }
-            let t = (age / RIPPLE_LIFETIME as f32).clamp(0.0, 1.0);
-            // Rings accelerate outwards and fade as they spread.
-            let eased = 1.0 - (1.0 - t) * (1.0 - t);
-            let radius = 4.0 + 72.0 * eased;
-            let fade = (1.0 - t) * (1.0 - t);
-            let alpha = (fade * 110.0 * ripple.strength) as u8;
-            if alpha == 0 {
-                continue;
-            }
-            painter.circle_stroke(
-                ripple.center,
-                radius,
-                Stroke::new(1.8_f32, Color32::from_white_alpha(alpha)),
-            );
-            painter.circle_stroke(
-                ripple.center,
-                radius * 0.74,
-                Stroke::new(0.9_f32, Color32::from_white_alpha(alpha / 2)),
-            );
-            if t < 0.22 {
-                let pop = 1.0 - t / 0.22;
-                painter.circle_filled(
-                    ripple.center,
-                    3.0 + 5.0 * (1.0 - pop),
-                    Color32::from_white_alpha((pop * 140.0) as u8),
-                );
-            }
-        }
-        ctx.request_repaint_after(Duration::from_millis(16));
-    }
 }
 
 impl eframe::App for LauncherApp {
@@ -1862,11 +1722,7 @@ impl eframe::App for LauncherApp {
             });
 
         egui::TopBottomPanel::bottom("pml_bottom")
-            .exact_height(if self.theme == Theme::Win7 {
-                104.0
-            } else {
-                84.0
-            })
+            .exact_height(84.0)
             .frame(
                 egui::Frame::none()
                     .fill(pml_theme::face())
@@ -1902,9 +1758,6 @@ impl eframe::App for LauncherApp {
         self.draw_publisher(ctx);
         self.draw_settings(ctx);
         self.draw_welcome(ctx);
-
-        self.update_ripples(ctx);
-        self.draw_ripples(ctx);
 
         if self.busy {
             ctx.request_repaint_after(Duration::from_millis(100));
