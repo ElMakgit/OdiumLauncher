@@ -15,6 +15,50 @@ use thiserror::Error;
 
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 
+/// Product name used by the window title, Minecraft's launcher_name and the
+/// multiplayer entry. A branded build can override it without touching the
+/// domain crates:
+///
+/// ```text
+/// set ODIUM_BRAND_NAME=My Launcher
+/// cargo build --release
+/// ```
+pub const BRAND_NAME: &str = match option_env!("ODIUM_BRAND_NAME") {
+    Some(name) => name,
+    None => "Odium Launcher",
+};
+
+/// Short name of the managed multiplayer entry (`servers.dat`).
+pub const SERVER_LIST_NAME: &str = match option_env!("ODIUM_SERVER_LIST_NAME") {
+    Some(name) => name,
+    None => "Odium",
+};
+
+/// Built-in source defaults. A distributor can point a branded build at its own
+/// manifest and server at compile time; the Odium values remain the fallback.
+pub const DEFAULT_SOURCE_ID: &str = match option_env!("ODIUM_DEFAULT_SOURCE_ID") {
+    Some(id) => id,
+    None => "odium",
+};
+pub const DEFAULT_SOURCE_NAME: &str = match option_env!("ODIUM_DEFAULT_SOURCE_NAME") {
+    Some(name) => name,
+    None => "Odium",
+};
+pub const DEFAULT_SOURCE_URL: &str = match option_env!("ODIUM_DEFAULT_SOURCE_URL") {
+    Some(url) => url,
+    None => "https://raw.githubusercontent.com/ElMakgit/Odium/main/EblyaCraft%20Don%27s%20Edit%202.3.1.mrpack",
+};
+const DEFAULT_SERVER_IP: &str = match option_env!("ODIUM_DEFAULT_SERVER_IP") {
+    Some(ip) => ip,
+    None => "45.85.60.39",
+};
+
+fn default_server_port() -> u16 {
+    option_env!("ODIUM_DEFAULT_SERVER_PORT")
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(25592)
+}
+
 /// Fallback heap size for configs that omit `jvm.xmx`. New configs also set
 /// `auto_xmx`, so the launcher replaces this with half of the installed RAM.
 pub const DEFAULT_XMX: u32 = 4096;
@@ -148,8 +192,8 @@ pub struct ServerSpec {
 impl Default for ServerSpec {
     fn default() -> Self {
         Self {
-            ip: "45.85.60.39".to_owned(),
-            port: 25592,
+            ip: DEFAULT_SERVER_IP.to_owned(),
+            port: default_server_port(),
         }
     }
 }
@@ -257,9 +301,9 @@ impl Default for Config {
             schema_version: CONFIG_SCHEMA_VERSION,
             nick: default_nick(),
             sources: default_sources(),
-            // The published Odium pack is the primary source. The embedded
-            // vanilla entry remains available as a network-free fallback.
-            active_source_id: "odium".to_owned(),
+            // The distributor's source is primary. The embedded vanilla entry
+            // remains available as a network-free fallback.
+            active_source_id: DEFAULT_SOURCE_ID.to_owned(),
             jvm: JvmConfig::default(),
             server: ServerSpec::default(),
             optional_mods_overrides: BTreeMap::new(),
@@ -403,10 +447,10 @@ where
 pub fn default_sources() -> Vec<Source> {
     vec![
         Source {
-            id: "odium".to_owned(),
-            name: "Odium".to_owned(),
-            manifest_url: "https://raw.githubusercontent.com/ElMakgit/Odium/main/EblyaCraft%20Don%27s%20Edit%202.3.1.mrpack".to_owned(),
-            kind: Some(SourceKind::Mrpack),
+            id: DEFAULT_SOURCE_ID.to_owned(),
+            name: DEFAULT_SOURCE_NAME.to_owned(),
+            manifest_url: DEFAULT_SOURCE_URL.to_owned(),
+            kind: Some(SourceKind::detect(DEFAULT_SOURCE_URL)),
         },
         Source {
             id: "vanilla".to_owned(),
@@ -776,7 +820,7 @@ mod tests {
         let config = Config::default();
         assert!(config.validate().is_ok());
         assert!(config.active_source().is_some());
-        assert_eq!(config.active_source_id, "odium");
+        assert_eq!(config.active_source_id, DEFAULT_SOURCE_ID);
         assert!(config.jvm.auto_xmx, "new installs use half of the RAM");
     }
 

@@ -695,4 +695,96 @@ mod tests {
         // `..` is preserved and rejected by validate(), never silently resolved.
         assert_eq!(normalize_path("../evil.jar"), "../evil.jar");
     }
+
+    fn local_file(path: &str, source: &Path) -> ManifestFile {
+        let bytes = std::fs::read(source).expect("read fixture");
+        ManifestFile {
+            path: path.to_owned(),
+            url: reqwest::Url::from_file_path(source)
+                .expect("file url")
+                .to_string(),
+            sha256: hash_bytes(HashAlgo::Sha256, &bytes),
+            sha512: String::new(),
+            sha1: String::new(),
+            size: bytes.len() as u64,
+        }
+    }
+
+    #[tokio::test]
+    async fn sync_is_a_delta_and_honours_optional_files() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let temp = tempfile::tempdir()?;
+        let paths = PortablePaths::from_root(temp.path().join("launcher_data"))?;
+        let source_dir = temp.path().join("source");
+        std::fs::create_dir_all(source_dir.join("mods"))?;
+        let fixtures: [(&str, &[u8]); 4] = [
+            ("a.jar", b"alpha"),
+            ("b.jar", b"beta"),
+            ("opt.jar", b"opt"),
+            ("c.jar", b"gamma"),
+        ];
+        for (name, body) in fixtures {
+            std::fs::write(source_dir.join("mods").join(name), body)?;
+        }
+
+        let mut manifest = sample_manifest();
+        manifest.files = vec![
+            local_file("mods/a.jar", &source_dir.join("mods").join("a.jar")),
+            local_file("mods/b.jar", &source_dir.join("mods").join("b.jar")),
+        ];
+        manifest.optional_files = vec![local_file(
+            "mods/opt.jar",
+            &source_dir.join("mods").join("opt.jar"),
+        )];
+        let instance = temp.path().join("instance");
+        let sync = ModpackSync::new(paths, Downloader::new(2)?);
+        let mut overrides = BTreeMap::from([("mods/opt.jar".to_owned(), false)]);
+
+        let first = sync
+            .sync(SyncRequest {
+                manifest: &manifest,
+                instance_dir: &instance,
+                overrides: &overrides,
+                progress: None,
+            })
+            .await?;
+        assert_eq!(first.downloaded, 2);
+        assert_eq!(first.optional_enabled, 0);
+        assert!(instance.join("mods/a.jar").is_file());
+        assert!(instance.join("mods/b.jar").is_file());
+        assert!(!instance.join("mods/opt.jar").exists());
+
+        let second = sync
+            .sync(SyncRequest {
+                manifest: &manifest,
+                instance_dir: &instance,
+                overrides: &overrides,
+                progress: None,
+            })
+            .await?;
+        assert_eq!(second.skipped, 2);
+        assert_eq!(second.downloaded, 0);
+
+        manifest.files = vec![
+            local_file("mods/a.jar", &source_dir.join("mods").join("a.jar")),
+            local_file("mods/c.jar", &source_dir.join("mods").join("c.jar")),
+        ];
+        overrides.insert("mods/opt.jar".to_owned(), true);
+        let third = sync
+            .sync(SyncRequest {
+                manifest: &manifest,
+                instance_dir: &instance,
+                overrides: &overrides,
+                progress: None,
+            })
+            .await?;
+        assert_eq!(third.downloaded, 2);
+        assert_eq!(third.skipped, 1);
+        assert_eq!(third.removed, 1);
+        assert_eq!(third.optional_enabled, 1);
+        assert!(!instance.join("mods/b.jar").exists());
+        assert!(instance.join("mods/c.jar").is_file());
+        assert!(instance.join("mods/opt.jar").is_file());
+        Ok(())
+    }
 }

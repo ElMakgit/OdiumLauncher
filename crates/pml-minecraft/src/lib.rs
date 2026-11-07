@@ -21,7 +21,7 @@ mod nbt;
 mod options;
 
 /// Name shown for the managed entry in Minecraft's multiplayer list.
-const SERVER_LIST_NAME: &str = "Odium";
+const SERVER_LIST_NAME: &str = pml_config::SERVER_LIST_NAME;
 
 pub const VERSION_MANIFEST_URL: &str =
     "https://piston-meta.mojang.com/mc/game/version_manifest_v2.json";
@@ -397,7 +397,7 @@ impl Minecraft {
             libraries_dir: self.paths.libraries_dir(),
             classpath: classpath_string,
             classpath_separator: classpath_separator().to_owned(),
-            launcher_name: "Odium Launcher".to_owned(),
+            launcher_name: pml_config::BRAND_NAME.to_owned(),
             launcher_version: env!("CARGO_PKG_VERSION").to_owned(),
             user_properties: "{}".to_owned(),
         };
@@ -1393,7 +1393,7 @@ mod tests {
             libraries_dir: PathBuf::from("C:\\launcher_data\\libraries"),
             classpath: "a.jar;b.jar".to_owned(),
             classpath_separator: ";".to_owned(),
-            launcher_name: "Odium Launcher".to_owned(),
+            launcher_name: pml_config::BRAND_NAME.to_owned(),
             launcher_version: "0.1.0".to_owned(),
             user_properties: "{}".to_owned(),
         }

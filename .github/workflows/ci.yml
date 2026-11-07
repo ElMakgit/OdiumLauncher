@@ -9,6 +9,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Repository hygiene
+        shell: powershell
+        run: ./tools/Check-RepoHygiene.ps1
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy

@@ -3,6 +3,11 @@
     Publishes an Odium Launcher pack to GitHub and builds a player-ready folder.
 
 .DESCRIPTION
+    Legacy convenience wrapper. The canonical publisher is the Rust
+    `pml-publish` crate (the launcher's "Издатель" window); this script exists
+    for CI/dev machines and must keep the same manifest rewrite, hash and URL
+    encoding rules. See tools/README.md.
+
     Input is the folder produced by Import-Mrpack.ps1 (or New-OdiumManifest.ps1):
       manifest.json
       overrides/        configs and custom jars that must be hosted by you
@@ -19,6 +24,9 @@
 .PARAMETER Token
     GitHub token with "repo" scope (classic) or Contents: read/write.
     Defaults to $env:GITHUB_TOKEN or $env:GH_TOKEN. Not needed with -DryRun.
+    The token is never embedded in a git URL, remote name or process argument:
+    git receives it through a credential helper that reads an environment
+    variable, and the temporary environment is cleared in `finally`.
 
 .EXAMPLE
     .\Publish-Pack.ps1 -PackDir ..\pack\eblyacraft-dons-edit -Repo myname/my-pack
@@ -62,6 +70,11 @@ function Get-Sha256([string]$Path) {
 
 function ConvertTo-UrlPath([string]$Path) {
     ($Path.Replace('\', '/').Split('/') | ForEach-Object { [uri]::EscapeDataString($_) }) -join '/'
+}
+
+function Hide-Secret([string]$Text, [string]$Secret) {
+    if ($Secret) { return $Text.Replace($Secret, '***') }
+    return $Text
 }
 
 function Write-Utf8NoBom([string]$Path, [string]$Text) {
@@ -303,17 +316,23 @@ $git = Get-Command git -ErrorAction SilentlyContinue
 if (-not $git) { throw 'git is not installed or not in PATH' }
 
 $env:GIT_TERMINAL_PROMPT = '0'
+# The helper definition is safe to show in a process list; the secret itself
+# stays in the child environment and is cleared in `finally`. An empty helper
+# first disables any system credential store for these commands.
+$env:ODIUM_GIT_TOKEN = $Token
+$credentialHelper = '!f() { case "$1" in get) echo username=x-access-token; echo "password=$ODIUM_GIT_TOKEN";; esac; }; f'
+$gitAuth = @('-c', 'credential.helper=', '-c', "credential.helper=$credentialHelper")
+$cloneUrl = "https://github.com/$Repo.git"
 $temp = Join-Path $env:TEMP ("odium_publish_" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp -Force | Out-Null
 
 try {
-    $cloneUrl = "https://x-access-token:$Token@github.com/$Repo.git"
-    $cloneOutput = & git clone --depth 1 $cloneUrl $temp 2>&1
+    $cloneOutput = & git @gitAuth clone --depth 1 $cloneUrl $temp 2>&1
     $cloned = $LASTEXITCODE -eq 0
     if (-not $cloned) {
-        $text = ($cloneOutput | Out-String)
+        $text = Hide-Secret (($cloneOutput | Out-String).Trim()) $Token
         if ($text -match 'Authentication failed|could not read Username|Repository not found|Permission denied') {
-            throw "Cannot access $Repo with this token: $($text.Trim())"
+            throw "Cannot access $Repo with this token: $text"
         }
         Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
         New-Item -ItemType Directory -Path $temp -Force | Out-Null
@@ -357,19 +376,23 @@ Manifest: $manifestUrl
         Write-Host 'No repository changes to commit.'
     }
 
-    $pushArgs = @('-C', $temp, 'push')
+    $pushArgs = @('-C', $temp) + $gitAuth + @('push')
     if ($Force) { $pushArgs += '--force' }
     $pushArgs += @('origin', $Branch)
-    & git @pushArgs 2>&1 | Out-Null
-    if ($LASTEXITCODE -ne 0) { throw 'git push failed' }
+    $pushOutput = & git @pushArgs 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "git push failed: $(Hide-Secret (($pushOutput | Out-String).Trim()) $Token)"
+    }
 
     if ($Tag) {
         & git -C $temp tag -f $Tag 2>&1 | Out-Null
-        $tagArgs = @('-C', $temp, 'push')
+        $tagArgs = @('-C', $temp) + $gitAuth + @('push')
         if ($Force) { $tagArgs += '--force' }
         $tagArgs += @('origin', $Tag)
-        & git @tagArgs 2>&1 | Out-Null
-        if ($LASTEXITCODE -ne 0) { throw 'git tag push failed' }
+        $tagOutput = & git @tagArgs 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "git tag push failed: $(Hide-Secret (($tagOutput | Out-String).Trim()) $Token)"
+        }
     }
 
     Write-Host ''
@@ -382,4 +405,5 @@ Manifest: $manifestUrl
 } finally {
     Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue
     Remove-Item Env:\GIT_TERMINAL_PROMPT -ErrorAction SilentlyContinue
+    Remove-Item Env:\ODIUM_GIT_TOKEN -ErrorAction SilentlyContinue
 }
