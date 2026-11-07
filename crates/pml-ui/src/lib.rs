@@ -1233,11 +1233,16 @@ impl LauncherApp {
                     manifest.loader.kind.label(),
                     manifest.loader.version
                 ));
-                ui.label(format!(
-                    "Файлы: {} + {} доп.",
-                    manifest.files.len(),
-                    manifest.optional_files.len()
-                ));
+                let optional = manifest.optional_files.len();
+                if optional == 0 {
+                    ui.label(format!("Файлы: {}", manifest.files.len()));
+                } else {
+                    ui.label(format!(
+                        "Файлы: {} + {} доп.",
+                        manifest.files.len(),
+                        optional
+                    ));
+                }
             } else if let Some(error) = &self.manifest_error {
                 ui.colored_label(pml_theme::error_color(), "Манифест недоступен");
                 ui.label(RichText::new(error).small());
