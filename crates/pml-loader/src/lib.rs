@@ -61,8 +61,10 @@ pub enum LoaderError {
     InstallerCancelled(String),
     #[error("установщик {loader} не завершился за {seconds} с и был остановлен")]
     InstallerTimedOut { loader: String, seconds: u64 },
-    #[error(".sha1/.sha256 для {0} недоступен; загрузка установщика без проверки отменена")]
-    ChecksumUnavailable(String),
+    #[error(
+        ".sha1/.sha256 для {url} недоступен ({reason}); загрузка установщика без проверки отменена"
+    )]
+    ChecksumUnavailable { url: String, reason: String },
     #[error("профиль загрузчика наследует {actual}, сборка требует {expected}")]
     ProfileMismatch { actual: String, expected: String },
     #[error("установщик {0} не создал version JSON")]
@@ -236,13 +238,20 @@ impl LoaderInstaller {
             // Maven always publishes a digest next to the jar; a missing one
             // means the endpoint is broken or hostile, and silently installing
             // an unverified executable is not an option.
-            let Some(checksum) = fetch_checksum(&self.downloader, url).await else {
-                tracing::warn!(
-                    url,
-                    loader = loader_name,
-                    "installer checksum is unavailable; refusing an unverified download"
-                );
-                return Err(LoaderError::ChecksumUnavailable(url.to_owned()));
+            let checksum = match fetch_checksum(&self.downloader, url).await {
+                Ok(checksum) => checksum,
+                Err(reason) => {
+                    tracing::warn!(
+                        url,
+                        loader = loader_name,
+                        %reason,
+                        "installer checksum is unavailable; refusing an unverified download"
+                    );
+                    return Err(LoaderError::ChecksumUnavailable {
+                        url: url.to_owned(),
+                        reason,
+                    });
+                }
             };
             tracing::debug!(
                 url,
@@ -620,44 +629,65 @@ fn default_minecraft_versions() -> Option<PathBuf> {
 /// mirrors that only carry stronger digests. A transient network error is
 /// retried, but a missing checksum still aborts the install: running an
 /// unverified executable is never acceptable.
-async fn fetch_checksum(downloader: &Downloader, url: &str) -> Option<Checksum> {
+///
+/// The failure reason is propagated because the two realistic causes need
+/// completely different fixes: a TLS error usually means an outdated root store
+/// on the client, while a timeout points at a blocked network.
+async fn fetch_checksum(downloader: &Downloader, url: &str) -> Result<Checksum, String> {
+    let mut reason = String::from("нет ответа");
     for algo in [HashAlgo::Sha1, HashAlgo::Sha256] {
-        let sidecar = format!("{url}.{}", checksum_extension(algo));
+        let extension = checksum_extension(algo);
+        let sidecar = format!("{url}.{extension}");
         for attempt in 0..CHECKSUM_ATTEMPTS {
             if attempt > 0 {
                 tokio::time::sleep(CHECKSUM_RETRY_DELAY * attempt).await;
             }
             match probe_checksum(downloader, &sidecar, algo).await {
-                ChecksumProbe::Found(value) => return Some(Checksum { value, algo }),
+                ChecksumProbe::Found(value) => return Ok(Checksum { value, algo }),
                 // A 404 will not heal within a retry; try the next digest.
-                ChecksumProbe::Missing => break,
-                ChecksumProbe::Failed => continue,
+                ChecksumProbe::Missing => {
+                    reason = format!("HTTP 404 для .{extension}");
+                    break;
+                }
+                ChecksumProbe::Failed(detail) => {
+                    tracing::warn!(
+                        url = sidecar,
+                        attempt = attempt + 1,
+                        %detail,
+                        "installer checksum request failed"
+                    );
+                    reason = detail;
+                    continue;
+                }
             }
         }
     }
-    None
+    Err(reason)
 }
 
 enum ChecksumProbe {
     Found(String),
     Missing,
-    Failed,
+    Failed(String),
 }
 
 async fn probe_checksum(downloader: &Downloader, url: &str, algo: HashAlgo) -> ChecksumProbe {
     let response = match downloader.client().get(url).send().await {
         Ok(response) => response,
-        Err(_) => return ChecksumProbe::Failed,
+        Err(error) => return ChecksumProbe::Failed(describe_request_error(&error)),
     };
     // Some mirrors answer 403/429 under load; those are worth another try,
     // unlike a plain 404.
     match response.status().as_u16() {
         404 | 410 => return ChecksumProbe::Missing,
-        status if !(200..300).contains(&status) => return ChecksumProbe::Failed,
+        status if !(200..300).contains(&status) => {
+            return ChecksumProbe::Failed(format!("HTTP {status}"));
+        }
         _ => {}
     }
-    let Ok(text) = response.text().await else {
-        return ChecksumProbe::Failed;
+    let text = match response.text().await {
+        Ok(text) => text,
+        Err(error) => return ChecksumProbe::Failed(describe_request_error(&error)),
     };
     // Maven sidecars are either a bare digest or `<digest>  <file name>`.
     let hash = text
@@ -671,8 +701,26 @@ async fn probe_checksum(downloader: &Downloader, url: &str, algo: HashAlgo) -> C
     } else {
         // A truncated or HTML body is not a checksum; retrying can help when a
         // proxy injected an error page.
-        ChecksumProbe::Failed
+        ChecksumProbe::Failed("ответ не похож на контрольную сумму".to_owned())
     }
+}
+
+/// Turns a reqwest failure into a short, user-facing cause. TLS errors get
+/// their own wording: they mean the certificate chain was rejected, not that
+/// the host is down, and users can act on that.
+fn describe_request_error(error: &reqwest::Error) -> String {
+    let text = format!("{error}");
+    let lower = text.to_ascii_lowercase();
+    if lower.contains("certificate") || lower.contains("tls") || lower.contains("unknownissuer") {
+        return format!("TLS: {text}");
+    }
+    if error.is_timeout() {
+        return "таймаут соединения".to_owned();
+    }
+    if error.is_connect() {
+        return format!("нет соединения: {text}");
+    }
+    text
 }
 
 fn checksum_extension(algo: HashAlgo) -> &'static str {
@@ -834,7 +882,7 @@ mod tests {
             let url = neoforge_installer_url(mc_version, loader_version);
             let checksum = fetch_checksum(&downloader, &url)
                 .await
-                .unwrap_or_else(|| panic!("no checksum for {url}"));
+                .unwrap_or_else(|reason| panic!("no checksum for {url}: {reason}"));
             assert_eq!(checksum.algo, HashAlgo::Sha1, "{url}");
             assert_eq!(checksum.value.len(), 40, "{url}");
             assert!(

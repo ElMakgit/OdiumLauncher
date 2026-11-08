@@ -4,7 +4,7 @@ Odium Launcher itself is licensed under the **0BSD** license (see `LICENSE`).
 
 The launcher's dependency graph contains the third-party crates listed below. Each crate keeps its own license; the license texts are reproduced in this file.
 
-Generated from `cargo metadata`: **422 packages**, **232 distinct license texts**.
+Generated from `cargo metadata`: **423 packages**, **233 distinct license texts**.
 
 ## Packages
 
@@ -379,6 +379,7 @@ Generated from `cargo metadata`: **422 packages**, **232 distinct license texts*
 | web-sys | 0.3.107 | MIT OR Apache-2.0 | [https://github.com/wasm-bindgen/wasm-bindgen](https://github.com/wasm-bindgen/wasm-bindgen) |
 | web-time | 1.1.0 | MIT OR Apache-2.0 | [https://github.com/daxpedda/web-time](https://github.com/daxpedda/web-time) |
 | webbrowser | 1.2.6 | MIT OR Apache-2.0 | [https://github.com/amodm/webbrowser-rs](https://github.com/amodm/webbrowser-rs) |
+| webpki-roots | 1.0.11 | CDLA-Permissive-2.0 | [https://github.com/rustls/webpki-roots](https://github.com/rustls/webpki-roots) |
 | winapi | 0.3.9 | MIT/Apache-2.0 | [https://github.com/retep998/winapi-rs](https://github.com/retep998/winapi-rs) |
 | winapi-i686-pc-windows-gnu | 0.4.0 | MIT/Apache-2.0 | [https://github.com/retep998/winapi-rs](https://github.com/retep998/winapi-rs) |
 | winapi-util | 0.1.11 | Unlicense OR MIT | [https://github.com/BurntSushi/winapi-util](https://github.com/BurntSushi/winapi-util) |
@@ -8074,6 +8075,75 @@ THIS SOFTWARE.
 ### License text — text 56
 
 Source: `LICENSE` (crate package).
+Used by: `webpki-roots 1.0.11`.
+
+~~~~text
+# Community Data License Agreement - Permissive - Version 2.0
+
+This is the Community Data License Agreement - Permissive, Version
+2.0 (the "agreement"). Data Provider(s) and Data Recipient(s) agree
+as follows:
+
+## 1. Provision of the Data
+
+1.1. A Data Recipient may use, modify, and share the Data made
+available by Data Provider(s) under this agreement if that Data
+Recipient follows the terms of this agreement.
+
+1.2. This agreement does not impose any restriction on a Data
+Recipient's use, modification, or sharing of any portions of the
+Data that are in the public domain or that may be used, modified,
+or shared under any other legal exception or limitation.
+
+## 2. Conditions for Sharing Data
+
+2.1. A Data Recipient may share Data, with or without modifications, so
+long as the Data Recipient makes available the text of this agreement
+with the shared Data.
+
+## 3. No Restrictions on Results
+
+3.1. This agreement does not impose any restriction or obligations
+with respect to the use, modification, or sharing of Results.
+
+## 4. No Warranty; Limitation of Liability
+
+4.1. All Data Recipients receive the Data subject to the following
+terms:
+
+THE DATA IS PROVIDED ON AN "AS IS" BASIS, WITHOUT REPRESENTATIONS,
+WARRANTIES OR CONDITIONS OF ANY KIND, EITHER EXPRESS OR IMPLIED
+INCLUDING, WITHOUT LIMITATION, ANY WARRANTIES OR CONDITIONS OF TITLE,
+NON-INFRINGEMENT, MERCHANTABILITY OR FITNESS FOR A PARTICULAR PURPOSE.
+
+NO DATA PROVIDER SHALL HAVE ANY LIABILITY FOR ANY DIRECT, INDIRECT,
+INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING
+WITHOUT LIMITATION LOST PROFITS), HOWEVER CAUSED AND ON ANY THEORY OF
+LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING
+NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE DATA OR RESULTS,
+EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+## 5. Definitions
+
+5.1. "Data" means the material received by a Data Recipient under
+this agreement.
+
+5.2. "Data Provider" means any person who is the source of Data
+provided under this agreement and in reliance on a Data Recipient's
+agreement to its terms.
+
+5.3. "Data Recipient" means any person who receives Data directly
+or indirectly from a Data Provider and agrees to the terms of this
+agreement.
+
+5.4. "Results" means any outcome obtained by computational analysis
+of Data, including for example machine learning models and models'
+insights.
+~~~~
+
+### License text — text 57
+
+Source: `LICENSE` (crate package).
 Used by: `ring 0.17.14`.
 
 ~~~~text
@@ -8088,7 +8158,7 @@ See src/polyfill/once_cell/LICENSE-APACHE and src/polyfill/once_cell/LICENSE-MIT
 for the license to code that was sourced from the once_cell project.
 ~~~~
 
-### License text — text 57
+### License text — text 58
 
 Source: `LICENSE-THIRD-PARTY` (crate package).
 Used by: `crossbeam-channel 0.5.17`.
@@ -8689,7 +8759,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
-### License text — text 58
+### License text — text 59
 
 Source: `LICENSE.md` (upstream repository https://github.com/madsmtm/objc2).
 Used by: `block2 0.5.1`, `block2 0.6.2`, `dispatch2 0.3.1`, `objc-sys 0.3.5`, `objc2 0.5.3`, `objc2 0.6.5`, `objc2-app-kit 0.2.2`, `objc2-app-kit 0.3.2` and 18 more.
@@ -8733,7 +8803,7 @@ identifiers in the crates (Xcode is required to use the crates, and when using
 Xcode you have already agreed to the Xcode license).
 ~~~~
 
-### MIT — text 59
+### MIT — text 60
 
 Source: `COPYING` (crate package).
 Used by: `wayland-protocols 0.32.13`.
@@ -8774,7 +8844,7 @@ The above is the version of the MIT "Expat" License used by X.org:
     http://cgit.freedesktop.org/xorg/xserver/tree/COPYING
 ~~~~
 
-### MIT — text 60
+### MIT — text 61
 
 Source: `LICENSE` (crate package).
 Used by: `zip 2.6.1`.
@@ -8806,7 +8876,7 @@ Some files in the "tests/data" subdirectory of this repository are under other
 licences; see files named LICENSE.*.txt for details.
 ~~~~
 
-### MIT — text 61
+### MIT — text 62
 
 Source: `LICENSE` (crate package).
 Used by: `hyper 1.12.0`.
@@ -8833,7 +8903,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 62
+### MIT — text 63
 
 Source: `LICENSE` (crate package).
 Used by: `xml-rs 0.8.29`.
@@ -8862,7 +8932,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 63
+### MIT — text 64
 
 Source: `LICENSE` (crate package).
 Used by: `slab 0.4.12`.
@@ -8895,7 +8965,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 64
+### MIT — text 65
 
 Source: `LICENSE` (crate package).
 Used by: `rfd 0.15.4`.
@@ -8924,7 +8994,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 65
+### MIT — text 66
 
 Source: `LICENSE` (crate package).
 Used by: `sharded-slab 0.1.7`.
@@ -8951,7 +9021,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 66
+### MIT — text 67
 
 Source: `LICENSE` (crate package).
 Used by: `android-properties 0.2.2`.
@@ -8980,7 +9050,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 67
+### MIT — text 68
 
 Source: `LICENSE` (crate package).
 Used by: `ashpd 0.11.1`.
@@ -9009,7 +9079,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 68
+### MIT — text 69
 
 Source: `LICENSE` (crate package).
 Used by: `matchers 0.2.0`.
@@ -9036,7 +9106,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 69
+### MIT — text 70
 
 Source: `LICENSE` (crate package).
 Used by: `memoffset 0.9.1`.
@@ -9063,7 +9133,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 70
+### MIT — text 71
 
 Source: `LICENSE` (crate package).
 Used by: `zcheapstr 1.2.0`.
@@ -9096,7 +9166,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 71
+### MIT — text 72
 
 Source: `LICENSE` (crate package).
 Used by: `try-lock 0.2.5`.
@@ -9124,7 +9194,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 72
+### MIT — text 73
 
 Source: `LICENSE` (crate package).
 Used by: `synstructure 0.14.0`.
@@ -9139,7 +9209,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 73
+### MIT — text 74
 
 Source: `LICENSE` (crate package).
 Used by: `tokio 1.54.1`, `tokio-util 0.7.20`.
@@ -9168,7 +9238,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 74
+### MIT — text 75
 
 Source: `LICENSE` (crate package).
 Used by: `cfg_aliases 0.2.2`.
@@ -9185,7 +9255,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 75
+### MIT — text 76
 
 Source: `LICENSE` (crate package).
 Used by: `bytes 1.12.1`.
@@ -9218,7 +9288,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 76
+### MIT — text 77
 
 Source: `LICENSE` (crate package).
 Used by: `http-body 1.1.0`, `http-body-util 0.1.5`.
@@ -9251,7 +9321,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 77
+### MIT — text 78
 
 Source: `LICENSE` (crate package).
 Used by: `urlencoding 2.1.3`.
@@ -9279,7 +9349,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 78
+### MIT — text 79
 
 Source: `LICENSE` (crate package).
 Used by: `tracing-core 0.1.36`.
@@ -9308,7 +9378,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 79
+### MIT — text 80
 
 Source: `LICENSE` (crate package).
 Used by: `miniz_oxide 0.8.9`, `miniz_oxide 0.9.1`.
@@ -9341,7 +9411,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 80
+### MIT — text 81
 
 Source: `LICENSE` (crate package).
 Used by: `glutin-winit 0.5.0`.
@@ -9368,7 +9438,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 81
+### MIT — text 82
 
 Source: `LICENSE` (crate package).
 Used by: `libredox 0.1.25`.
@@ -9397,7 +9467,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 82
+### MIT — text 83
 
 Source: `LICENSE` (crate package).
 Used by: `uds_windows 1.2.1`.
@@ -9426,7 +9496,7 @@ MIT License
     SOFTWARE
 ~~~~
 
-### MIT — text 83
+### MIT — text 84
 
 Source: `LICENSE` (crate package).
 Used by: `zbus 5.19.0`, `zbus_macros 5.19.0`, `zbus_names 4.3.5`, `zvariant 5.15.1`, `zvariant_derive 5.15.1`.
@@ -9459,7 +9529,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 84
+### MIT — text 85
 
 Source: `LICENSE` (crate package).
 Used by: `combine 4.6.9`.
@@ -9488,7 +9558,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 85
+### MIT — text 86
 
 Source: `LICENSE` (crate package).
 Used by: `xcursor 0.3.11`.
@@ -9517,7 +9587,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 86
+### MIT — text 87
 
 Source: `LICENSE` (crate package).
 Used by: `generic-array 0.14.7`.
@@ -9546,7 +9616,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 87
+### MIT — text 88
 
 Source: `LICENSE` (crate package).
 Used by: `nu-ansi-term 0.50.3`.
@@ -9576,7 +9646,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 88
+### MIT — text 89
 
 Source: `LICENSE` (crate package).
 Used by: `winresource 0.1.34`.
@@ -9609,7 +9679,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 89
+### MIT — text 90
 
 Source: `LICENSE` (crate package).
 Used by: `orbclient 0.3.55`.
@@ -9638,7 +9708,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 90
+### MIT — text 91
 
 Source: `LICENSE` (crate package).
 Used by: `xkbcommon-dl 0.4.2`.
@@ -9667,7 +9737,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 91
+### MIT — text 92
 
 Source: `LICENSE` (crate package).
 Used by: `tokio-macros 2.7.2`.
@@ -9697,7 +9767,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 92
+### MIT — text 93
 
 Source: `LICENSE` (crate package).
 Used by: `tracing 0.1.44`, `tracing-appender 0.2.5`, `tracing-attributes 0.1.31`, `tracing-core 0.1.36`, `tracing-log 0.2.0`, `tracing-subscriber 0.3.23`.
@@ -9730,7 +9800,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 93
+### MIT — text 94
 
 Source: `LICENSE` (crate package).
 Used by: `mio 1.2.4`.
@@ -9757,7 +9827,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 94
+### MIT — text 95
 
 Source: `LICENSE` (crate package).
 Used by: `smithay-clipboard 0.7.3`.
@@ -9784,7 +9854,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 95
+### MIT — text 96
 
 Source: `LICENSE` (crate package).
 Used by: `tower 0.5.3`, `tower-layer 0.3.3`, `tower-service 0.3.3`.
@@ -9817,7 +9887,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 96
+### MIT — text 97
 
 Source: `LICENSE` (upstream repository https://github.com/tokio-rs/valuable).
 Used by: `valuable 0.1.1`.
@@ -9850,7 +9920,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 97
+### MIT — text 98
 
 Source: `LICENSE` (crate package).
 Used by: `hyper-util 0.1.21`.
@@ -9877,7 +9947,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 98
+### MIT — text 99
 
 Source: `LICENSE` (crate package).
 Used by: `tower-http 0.6.11`.
@@ -9910,7 +9980,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 99
+### MIT — text 100
 
 Source: `LICENSE` (crate package).
 Used by: `h2 0.4.20`.
@@ -9943,7 +10013,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 100
+### MIT — text 101
 
 Source: `LICENSE` (crate package).
 Used by: `want 0.3.2`.
@@ -9970,7 +10040,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 101
+### MIT — text 102
 
 Source: `LICENSE` (crate package).
 Used by: `redox_syscall 0.4.1`, `redox_syscall 0.5.18`, `redox_syscall 0.9.5`.
@@ -10000,7 +10070,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 102
+### MIT — text 103
 
 Source: `LICENSE-LIBM-MIT` (crate package).
 Used by: `dpi 0.1.2`.
@@ -10059,7 +10129,7 @@ have been licensed under extremely permissive terms.
 ------------------------------------------------------------------------------
 ~~~~
 
-### MIT — text 103
+### MIT — text 104
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `unicode-segmentation 1.13.3`.
@@ -10092,7 +10162,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 104
+### MIT — text 105
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `quinn 0.11.12`, `quinn-proto 0.11.19`, `quinn-udp 0.5.16`.
@@ -10107,7 +10177,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 105
+### MIT — text 106
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `plain 0.2.3`.
@@ -10140,7 +10210,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 106
+### MIT — text 107
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `ttf-parser 0.25.1`.
@@ -10167,7 +10237,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 107
+### MIT — text 108
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `idna_adapter 1.2.2`.
@@ -10200,7 +10270,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 108
+### MIT — text 109
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `cursor-icon 1.2.0`, `wayland-csd-frame 0.3.0`.
@@ -10227,7 +10297,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 109
+### MIT — text 110
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `chacha20 0.10.2`.
@@ -10260,7 +10330,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 110
+### MIT — text 111
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `uuid 1.29.1`.
@@ -10294,7 +10364,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 111
+### MIT — text 112
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `enumflags2_derive 0.7.12`.
@@ -10327,7 +10397,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 112
+### MIT — text 113
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `bitflags 1.3.2`, `bitflags 2.13.2`, `log 0.4.35`, `num-traits 0.2.19`, `regex-automata 0.4.18`, `regex-syntax 0.8.11`.
@@ -10360,7 +10430,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 113
+### MIT — text 114
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `aho-corasick 1.1.5`, `byteorder-lite 0.1.0`, `memchr 2.8.3`, `walkdir 2.5.0`.
@@ -10389,7 +10459,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 114
+### MIT — text 115
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `android-activity 0.6.1`, `ndk 0.9.0`, `ndk-context 0.1.1`, `ndk-sys 0.6.0+11769913`, `simdutf8 0.1.5`.
@@ -10416,7 +10486,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 115
+### MIT — text 116
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `scopeguard 1.2.0`.
@@ -10449,7 +10519,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 116
+### MIT — text 117
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `tokio-rustls 0.26.6`.
@@ -10482,7 +10552,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 117
+### MIT — text 118
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `deranged 0.5.9`.
@@ -10509,7 +10579,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 118
+### MIT — text 119
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `flate2 1.1.11`.
@@ -10542,7 +10612,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 119
+### MIT — text 120
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `async-compression 0.4.52`, `compression-codecs 0.4.47`, `compression-core 0.4.34`.
@@ -10571,7 +10641,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 120
+### MIT — text 121
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `winapi 0.3.9`, `winapi-i686-pc-windows-gnu 0.4.0`, `winapi-x86_64-pc-windows-gnu 0.4.0`.
@@ -10598,7 +10668,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 121
+### MIT — text 122
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `base64 0.23.1`.
@@ -10627,7 +10697,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 122
+### MIT — text 123
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `adler2 2.0.1`, `anyhow 1.0.104`, `async-channel 2.5.0`, `async-executor 1.14.1`, `async-fs 2.2.0`, `async-io 2.6.0`, `async-lock 3.5.0`, `async-net 2.0.0` and 59 more.
@@ -10658,7 +10728,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 123
+### MIT — text 124
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `downcast-rs 1.2.1`.
@@ -10691,7 +10761,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 124
+### MIT — text 125
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `web-time 1.1.0`.
@@ -10720,7 +10790,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 125
+### MIT — text 126
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `form_urlencoded 1.2.2`.
@@ -10753,7 +10823,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 126
+### MIT — text 127
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `security-framework 3.7.0`, `security-framework-sys 2.17.0`.
@@ -10781,7 +10851,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 127
+### MIT — text 128
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `jni-sys 0.3.1`, `jni-sys 0.4.1`, `jni-sys-macros 0.4.1`.
@@ -10808,7 +10878,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 128
+### MIT — text 129
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `cgl 0.3.2`, `core-foundation 0.10.1`, `core-foundation 0.9.4`, `core-foundation-sys 0.8.7`, `core-graphics 0.23.2`, `core-graphics-types 0.1.3`.
@@ -10841,7 +10911,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 129
+### MIT — text 130
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `md-5 0.10.6`, `sha1 0.10.7`, `sha2 0.10.9`.
@@ -10876,7 +10946,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 130
+### MIT — text 131
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `document-features 0.2.12`.
@@ -10903,7 +10973,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 131
+### MIT — text 132
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `equivalent 1.0.3`.
@@ -10936,7 +11006,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 132
+### MIT — text 133
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `serde_spanned 1.1.3`, `toml 1.2.1+spec-1.1.0`, `toml_datetime 1.1.3+spec-1.1.0`, `toml_edit 0.25.19+spec-1.1.0`, `toml_parser 1.1.5+spec-1.1.0`, `toml_writer 1.2.0+spec-1.1.0`.
@@ -10963,7 +11033,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 133
+### MIT — text 134
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `getrandom 0.2.17`.
@@ -10997,7 +11067,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 134
+### MIT — text 135
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `async-broadcast 0.7.2`.
@@ -11026,7 +11096,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 135
+### MIT — text 136
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `num-conv 0.2.2`.
@@ -11053,7 +11123,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 136
+### MIT — text 137
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `indexmap 2.14.2`.
@@ -11086,7 +11156,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 137
+### MIT — text 138
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `symlink 0.1.0`.
@@ -11119,7 +11189,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 138
+### MIT — text 139
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `nohash-hasher 0.2.0`.
@@ -11145,7 +11215,7 @@ WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 139
+### MIT — text 140
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `reqwest 0.12.28`.
@@ -11172,7 +11242,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 140
+### MIT — text 141
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `bumpalo 3.20.3`.
@@ -11205,7 +11275,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 141
+### MIT — text 142
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `crossbeam-channel 0.5.17`, `crossbeam-utils 0.8.23`.
@@ -11240,7 +11310,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 142
+### MIT — text 143
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `as-raw-xcb-connection 1.0.1`.
@@ -11273,7 +11343,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 143
+### MIT — text 144
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `stable_deref_trait 1.2.1`.
@@ -11306,7 +11376,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 144
+### MIT — text 145
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `block-buffer 0.10.4`.
@@ -11339,7 +11409,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 145
+### MIT — text 146
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `cpufeatures 0.2.17`.
@@ -11372,7 +11442,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 146
+### MIT — text 147
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `arbitrary 1.5.0`, `derive_arbitrary 1.5.0`.
@@ -11407,7 +11477,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 147
+### MIT — text 148
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `crypto-common 0.1.7`.
@@ -11440,7 +11510,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 148
+### MIT — text 149
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `base64 0.22.1`.
@@ -11469,7 +11539,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 149
+### MIT — text 150
 
 Source: `LICENSE-MIT` (upstream repository https://github.com/jni-rs/jni-rs).
 Used by: `jni 0.22.4`, `jni-macros 0.22.4`.
@@ -11498,7 +11568,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 150
+### MIT — text 151
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `powerfmt 0.2.1`.
@@ -11525,7 +11595,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 151
+### MIT — text 152
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `rand_core 0.10.1`.
@@ -11558,7 +11628,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 152
+### MIT — text 153
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `same-file 1.0.6`, `winapi-util 0.1.11`.
@@ -11587,7 +11657,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 153
+### MIT — text 154
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `getrandom 0.3.4`.
@@ -11621,7 +11691,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 154
+### MIT — text 155
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `ring 0.17.14`.
@@ -11652,7 +11722,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 155
+### MIT — text 156
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `fdeflate 0.3.7`, `image 0.25.10`.
@@ -11685,7 +11755,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 156
+### MIT — text 157
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `idna 1.1.0`, `percent-encoding 2.3.2`, `url 2.5.8`.
@@ -11718,7 +11788,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 157
+### MIT — text 158
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `tempfile 3.27.0`.
@@ -11751,7 +11821,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 158
+### MIT — text 159
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `utf8_iter 1.1.0`, `utf_types 1.0.0`.
@@ -11784,7 +11854,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 159
+### MIT — text 160
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `smallvec 1.16.5`.
@@ -11817,7 +11887,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 160
+### MIT — text 161
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `errno 0.3.14`.
@@ -11850,7 +11920,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 161
+### MIT — text 162
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `time 0.3.55`, `time-core 0.1.9`, `time-macros 0.2.32`.
@@ -11877,7 +11947,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 162
+### MIT — text 163
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `png 0.18.1`.
@@ -11910,7 +11980,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 163
+### MIT — text 164
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `zeroize 1.9.1`.
@@ -11943,7 +12013,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 164
+### MIT — text 165
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `cc 1.11.1`, `cfg-if 1.0.5`, `find-msvc-tools 0.1.15`, `jobserver 0.1.35`, `js-sys 0.3.107`, `openssl-probe 0.2.2`, `pkg-config 0.3.34`, `scoped-tls 1.0.1` and 7 more.
@@ -11976,7 +12046,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 165
+### MIT — text 166
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `httparse 1.10.1`.
@@ -12003,7 +12073,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 166
+### MIT — text 167
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `winnow 1.0.5`.
@@ -12029,7 +12099,7 @@ OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 167
+### MIT — text 168
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `typenum 1.20.1`.
@@ -12058,7 +12128,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 168
+### MIT — text 169
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `lock_api 0.4.14`, `parking_lot 0.12.5`, `parking_lot_core 0.9.12`, `rustc_version 0.4.1`, `thread_local 1.1.10`.
@@ -12091,7 +12161,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 169
+### MIT — text 170
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `webbrowser 1.2.6`.
@@ -12126,7 +12196,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 170
+### MIT — text 171
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `getrandom 0.4.3`.
@@ -12160,7 +12230,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 171
+### MIT — text 172
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `crc32fast 1.5.4`.
@@ -12189,7 +12259,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 172
+### MIT — text 173
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `static_assertions 1.1.0`.
@@ -12218,7 +12288,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 173
+### MIT — text 174
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `autocfg 1.5.1`.
@@ -12251,7 +12321,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 174
+### MIT — text 175
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `digest 0.10.7`.
@@ -12284,7 +12354,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 175
+### MIT — text 176
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `hex 0.4.3`.
@@ -12312,7 +12382,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 176
+### MIT — text 177
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `zerocopy 0.8.63`, `zerocopy-derive 0.8.63`.
@@ -12345,7 +12415,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 177
+### MIT — text 178
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `x11rb 0.13.2`, `x11rb-protocol 0.13.2`.
@@ -12378,7 +12448,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 178
+### MIT — text 179
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `hyper-rustls 0.27.10`, `rustls 0.23.46`, `rustls-native-certs 0.8.5`.
@@ -12411,7 +12481,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 179
+### MIT — text 180
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `signal-hook-registry 1.4.8`.
@@ -12444,7 +12514,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 180
+### MIT — text 181
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `hashbrown 0.17.1`.
@@ -12477,7 +12547,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 181
+### MIT — text 182
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `ppv-lite86 0.2.21`.
@@ -12510,7 +12580,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 182
+### MIT — text 183
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `futures-channel 0.3.34`, `futures-core 0.3.34`, `futures-io 0.3.34`, `futures-macro 0.3.34`, `futures-sink 0.3.34`, `futures-task 0.3.34`, `futures-util 0.3.34`.
@@ -12544,7 +12614,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 183
+### MIT — text 184
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `serde_urlencoded 0.7.1`.
@@ -12577,7 +12647,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 184
+### MIT — text 185
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `memmap2 0.9.12`.
@@ -12611,7 +12681,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 185
+### MIT — text 186
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `rand_pcg 0.10.2`.
@@ -12645,7 +12715,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 186
+### MIT — text 187
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `fnv 1.0.7`.
@@ -12678,7 +12748,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 187
+### MIT — text 188
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `rustls-pki-types 1.15.1`.
@@ -12711,7 +12781,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 188
+### MIT — text 189
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `foreign-types 0.5.0`, `foreign-types-macros 0.2.4`, `foreign-types-shared 0.3.1`.
@@ -12738,7 +12808,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 189
+### MIT — text 190
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `ipnet 2.12.2`.
@@ -12753,7 +12823,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 190
+### MIT — text 191
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `libc 0.2.191`.
@@ -12786,7 +12856,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 191
+### MIT — text 192
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `lru-slab 0.1.3`.
@@ -12801,7 +12871,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 192
+### MIT — text 193
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `rand 0.10.3`, `rand 0.9.5`, `rand_chacha 0.9.0`, `rand_core 0.9.5`.
@@ -12835,7 +12905,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 193
+### MIT — text 194
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `shlex 2.0.1`.
@@ -12864,7 +12934,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 194
+### MIT — text 195
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `xkeysym 0.2.1`.
@@ -12891,7 +12961,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 195
+### MIT — text 196
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `ahash 0.8.12`.
@@ -12924,7 +12994,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 196
+### MIT — text 197
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `pollster 0.4.0`.
@@ -12957,7 +13027,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 197
+### MIT — text 198
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `litrs 1.0.1`.
@@ -12990,7 +13060,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 198
+### MIT — text 199
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `enumflags2 0.7.12`.
@@ -13023,7 +13093,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 199
+### MIT — text 200
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `bytemuck 1.25.2`, `bytemuck_derive 1.12.1`.
@@ -13040,7 +13110,7 @@ The above copyright notice and this permission notice (including the next paragr
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 200
+### MIT — text 201
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `cpufeatures 0.3.1`.
@@ -13073,7 +13143,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 201
+### MIT — text 202
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `version_check 0.9.5`.
@@ -13100,7 +13170,7 @@ IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
 CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 202
+### MIT — text 203
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `system-configuration 0.7.0`, `system-configuration-sys 0.6.0`.
@@ -13133,7 +13203,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 203
+### MIT — text 204
 
 Source: `LICENSE-MIT` (upstream repository https://github.com/emilk/egui).
 Used by: `ecolor 0.29.1`, `eframe 0.29.1`, `egui 0.29.1`, `egui-winit 0.29.1`, `egui_glow 0.29.1`, `emath 0.29.1`, `epaint 0.29.1`, `epaint_default_fonts 0.29.1`.
@@ -13166,7 +13236,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 204
+### MIT — text 205
 
 Source: `LICENSE-MIT` (crate package).
 Used by: `http 1.5.0`.
@@ -13199,7 +13269,7 @@ IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 205
+### MIT — text 206
 
 Source: `LICENSE-MIT.md` (crate package).
 Used by: `quick-xml 0.41.0`.
@@ -13230,7 +13300,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 206
+### MIT — text 207
 
 Source: `LICENSE-MIT.md` (crate package).
 Used by: `raw-window-handle 0.6.2`.
@@ -13259,7 +13329,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 207
+### MIT — text 208
 
 Source: `LICENSE-MIT.md` (crate package).
 Used by: `miniz_oxide 0.8.9`, `miniz_oxide 0.9.1`.
@@ -13291,7 +13361,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 208
+### MIT — text 209
 
 Source: `LICENSE-MIT.md` (crate package).
 Used by: `tinyvec 1.13.3`.
@@ -13304,7 +13374,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 209
+### MIT — text 210
 
 Source: `LICENSE-MIT.txt` (crate package).
 Used by: `arboard 3.7.0`.
@@ -13333,7 +13403,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 210
+### MIT — text 211
 
 Source: `LICENSE.md` (crate package).
 Used by: `schannel 0.1.30`.
@@ -13348,7 +13418,7 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ~~~~
 
-### MIT — text 211
+### MIT — text 212
 
 Source: `LICENSE.md` (crate package).
 Used by: `simd-adler32 0.3.10`.
@@ -13377,7 +13447,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ~~~~
 
-### MIT — text 212
+### MIT — text 213
 
 Source: `LICENSE.txt` (crate package).
 Used by: `dlib 0.5.3`.
@@ -13404,7 +13474,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 213
+### MIT — text 214
 
 Source: `LICENSE.txt` (crate package).
 Used by: `calloop 0.13.0`, `calloop 0.14.5`, `smithay-client-toolkit 0.19.2`, `smithay-client-toolkit 0.20.0`.
@@ -13431,7 +13501,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 214
+### MIT — text 215
 
 Source: `LICENSE.txt` (crate package).
 Used by: `wayland-backend 0.3.17`, `wayland-client 0.31.15`, `wayland-cursor 0.31.14`, `wayland-protocols 0.32.13`, `wayland-protocols-experimental 20250721.0.1`, `wayland-protocols-misc 0.3.12`, `wayland-protocols-plasma 0.3.12`, `wayland-protocols-wlr 0.3.12` and 2 more.
@@ -13458,7 +13528,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 215
+### MIT — text 216
 
 Source: `LICENSE.txt` (crate package).
 Used by: `calloop-wayland-source 0.3.0`, `calloop-wayland-source 0.4.1`.
@@ -13485,7 +13555,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 ~~~~
 
-### MIT — text 216
+### MIT — text 217
 
 Source: `NOTICES.md` (crate package).
 Used by: `cfg_aliases 0.2.2`.
@@ -13519,7 +13589,7 @@ The `cfg_aliases!` macro uses a lot of the code from [`tectonic_cfg_support::tar
 ---
 ~~~~
 
-### MIT — text 217
+### MIT — text 218
 
 Source: `license-mit` (crate package).
 Used by: `windows-link 0.2.1`, `windows-registry 0.6.1`, `windows-result 0.4.1`, `windows-strings 0.5.1`, `windows-sys 0.52.0`, `windows-sys 0.59.0`, `windows-sys 0.61.2`, `windows-targets 0.52.6` and 8 more.
@@ -13548,7 +13618,7 @@ MIT License
     SOFTWARE
 ~~~~
 
-### OFL-1.1 — text 218
+### OFL-1.1 — text 219
 
 Source: `OFL.txt` (crate package).
 Used by: `epaint_default_fonts 0.29.1`.
@@ -13648,7 +13718,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
 OTHER DEALINGS IN THE FONT SOFTWARE.
 ~~~~
 
-### UFL-1.0 — text 219
+### UFL-1.0 — text 220
 
 Source: `UFL.txt` (crate package).
 Used by: `epaint_default_fonts 0.29.1`.
@@ -13752,7 +13822,7 @@ FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER
 DEALINGS IN THE FONT SOFTWARE.
 ~~~~
 
-### Unicode-3.0 — text 220
+### Unicode-3.0 — text 221
 
 Source: `LICENSE` (crate package).
 Used by: `icu_collections 2.4.0`, `icu_locale_core 2.4.0`, `icu_normalizer 2.4.0`, `icu_normalizer_data 2.4.0`, `icu_properties 2.4.0`, `icu_properties_data 2.4.0`, `icu_provider 2.4.0`, `litemap 0.8.3` and 10 more.
@@ -13806,7 +13876,7 @@ Portions of ICU4X may have been adapted from ICU4C and/or ICU4J.
 ICU 1.8.1 to ICU 57.1 © 1995-2016 International Business Machines Corporation and others.
 ~~~~
 
-### Unicode-3.0 — text 221
+### Unicode-3.0 — text 222
 
 Source: `LICENSE-UNICODE` (crate package).
 Used by: `unicode-ident 1.0.27`.
@@ -13853,7 +13923,7 @@ dealings in these Data Files or Software without prior written
 authorization of the copyright holder.
 ~~~~
 
-### Unicode-3.0 — text 222
+### Unicode-3.0 — text 223
 
 Source: `LICENSE-UNICODE` (crate package).
 Used by: `regex-syntax 0.8.11`.
@@ -13918,7 +13988,7 @@ use or other dealings in these Data Files or Software without prior
 written authorization of the copyright holder.
 ~~~~
 
-### Unlicense — text 223
+### Unlicense — text 224
 
 Source: `UNLICENSE` (crate package).
 Used by: `aho-corasick 1.1.5`, `byteorder-lite 0.1.0`, `memchr 2.8.3`, `same-file 1.0.6`, `walkdir 2.5.0`, `winapi-util 0.1.11`.
@@ -13950,7 +14020,7 @@ OTHER DEALINGS IN THE SOFTWARE.
 For more information, please refer to <http://unlicense.org/>
 ~~~~
 
-### Zlib — text 224
+### Zlib — text 225
 
 Source: `LICENSE` (crate package).
 Used by: `slotmap 1.1.1`.
@@ -13977,7 +14047,7 @@ the following restrictions:
  3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### Zlib — text 225
+### Zlib — text 226
 
 Source: `LICENSE` (crate package).
 Used by: `zlib-rs 0.6.8`.
@@ -14004,7 +14074,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### Zlib — text 226
+### Zlib — text 227
 
 Source: `LICENSE-ZLIB` (crate package).
 Used by: `cursor-icon 1.2.0`.
@@ -14023,7 +14093,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### Zlib — text 227
+### Zlib — text 228
 
 Source: `LICENSE-ZLIB` (crate package).
 Used by: `glow 0.14.2`.
@@ -14046,7 +14116,7 @@ freely, subject to the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### Zlib — text 228
+### Zlib — text 229
 
 Source: `LICENSE-ZLIB` (crate package).
 Used by: `xkeysym 0.2.1`.
@@ -14065,7 +14135,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### Zlib — text 229
+### Zlib — text 230
 
 Source: `LICENSE-ZLIB` (crate package).
 Used by: `bytemuck 1.25.2`, `bytemuck_derive 1.12.1`, `tinyvec 1.13.3`.
@@ -14084,7 +14154,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### Zlib — text 230
+### Zlib — text 231
 
 Source: `LICENSE-ZLIB` (crate package).
 Used by: `lru-slab 0.1.3`.
@@ -14111,7 +14181,7 @@ the following restrictions:
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### Zlib — text 231
+### Zlib — text 232
 
 Source: `LICENSE-ZLIB.md` (crate package).
 Used by: `raw-window-handle 0.6.2`.
@@ -14130,7 +14200,7 @@ Permission is granted to anyone to use this software for any purpose, including 
 3. This notice may not be removed or altered from any source distribution.
 ~~~~
 
-### Zlib — text 232
+### Zlib — text 233
 
 Source: `LICENSE-ZLIB.md` (crate package).
 Used by: `miniz_oxide 0.8.9`, `miniz_oxide 0.9.1`.

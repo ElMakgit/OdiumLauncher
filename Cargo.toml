@@ -14,7 +14,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 rust-version = "1.82"
 license = "0BSD"
@@ -37,7 +37,11 @@ tokio = { version = "1.42", features = [
     "net",
 ] }
 reqwest = { version = "0.12", default-features = false, features = [
+    # Native roots keep antivirus and corporate proxy interception working;
+    # the bundled Mozilla store covers Windows versions that no longer receive
+    # root updates (Windows 7 lacks ISRG Root X2, which signs newer CDNs).
     "rustls-tls-native-roots",
+    "rustls-tls-webpki-roots",
     "system-proxy",
     "stream",
     "json",

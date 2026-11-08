@@ -1774,12 +1774,7 @@ mod tests {
         let source = dir.path().join("orb.ogg");
         let body = b"two asset names, one object".repeat(4096);
         tokio::fs::write(&source, &body).await?;
-        let dest = dir
-            .path()
-            .join("assets")
-            .join("objects")
-            .join("ab")
-            .join("hash");
+        let dest = dir.path().join("objects").join("ab").join("hash");
         let url = reqwest::Url::from_file_path(&source)
             .expect("file url")
             .to_string();
@@ -1828,6 +1823,34 @@ mod tests {
         assert_eq!(summary.downloaded, 1);
         assert_eq!(tokio::fs::read(&dest).await?, body);
         assert!(!part_path(&dest).exists());
+        Ok(())
+    }
+
+    /// Windows 7 and other out-of-support systems no longer receive root
+    /// certificate updates, so they lack ISRG Root X2, which signs
+    /// `maven.neoforged.net`. The launcher must keep working there thanks to the
+    /// bundled Mozilla store, without touching the system store at all.
+    #[tokio::test]
+    #[ignore = "network test: reaches maven.neoforged.net"]
+    async fn bundled_roots_cover_the_neoforge_cdn() -> Result<(), Box<dyn std::error::Error>> {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .tls_built_in_native_certs(false)
+            .build()?;
+        let response = client
+            .get(
+                "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.248/\
+                 neoforge-21.1.248-installer.jar.sha1",
+            )
+            .send()
+            .await?;
+        assert_eq!(response.status(), reqwest::StatusCode::OK);
+        let body = response.text().await?;
+        assert_eq!(
+            body.trim().len(),
+            40,
+            "expected a sha1 digest, got {body:?}"
+        );
         Ok(())
     }
 
