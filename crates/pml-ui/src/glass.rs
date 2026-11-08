@@ -76,6 +76,24 @@ pub struct Backdrop {
     height: u32,
 }
 
+/// Shows the window again on `Drop`, so a recapture cannot leave the launcher
+/// hidden when the capture worker fails or panics.
+#[cfg(windows)]
+struct RestoreWindow(isize);
+
+#[cfg(windows)]
+impl Drop for RestoreWindow {
+    fn drop(&mut self) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_SHOWNA};
+
+        // SAFETY: this is the window `recapture` hid moments ago; SW_SHOWNA
+        // shows it without stealing focus from the player.
+        unsafe {
+            ShowWindow(self.0 as windows_sys::Win32::Foundation::HWND, SW_SHOWNA);
+        }
+    }
+}
+
 struct Snapshot {
     pixels: Vec<u8>,
     origin_x: i32,
@@ -132,24 +150,40 @@ impl Backdrop {
     }
 
     /// Recaptures the desktop after a live switch to the glass theme. The
-    /// launcher window is hidden for a moment so the snapshot does not contain
-    /// the launcher itself.
+    /// launcher window is hidden immediately; the 140 ms settle, GDI capture
+    /// and blur all run on a worker thread. The old texture stays visible
+    /// until the new snapshot is ready.
+    ///
+    /// The worker restores the window itself instead of leaving that to
+    /// [`Self::poll`]: hiding the window can stall the egui redraw loop, in
+    /// which case `update` (and therefore `poll`) is never called again and
+    /// the launcher would stay invisible forever.
     pub fn recapture(&mut self, hwnd: Option<isize>) {
         #[cfg(windows)]
         if let Some(hwnd) = hwnd {
-            use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE, SW_SHOW};
+            use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
 
-            let hwnd = hwnd as windows_sys::Win32::Foundation::HWND;
+            tracing::info!("recapturing the desktop for the Windows 7 glass");
+            let handle = hwnd as windows_sys::Win32::Foundation::HWND;
             // SAFETY: ShowWindow only toggles this window's visibility.
             unsafe {
-                ShowWindow(hwnd, SW_HIDE);
+                ShowWindow(handle, SW_HIDE);
             }
-            std::thread::sleep(Duration::from_millis(140));
-            *self = Self::capture_now();
-            // SAFETY: restoring the window that was just hidden.
-            unsafe {
-                ShowWindow(hwnd, SW_SHOW);
-            }
+
+            let (tx, rx) = mpsc::channel();
+            std::thread::spawn(move || {
+                // Restores the window exactly once, whatever happens below:
+                // on success, when the capture fails and even on a panic.
+                let _restore = RestoreWindow(hwnd);
+                std::thread::sleep(Duration::from_millis(140));
+                if let Some(mut snapshot) = capture_screen() {
+                    let width = snapshot.width as usize;
+                    let height = snapshot.height as usize;
+                    box_blur(&mut snapshot.pixels, width, height, 10);
+                    let _ = tx.send(snapshot);
+                }
+            });
+            self.rx = Some(rx);
             return;
         }
         *self = Self::capture_now();
