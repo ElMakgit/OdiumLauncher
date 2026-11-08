@@ -71,6 +71,7 @@ PLIST
 
 echo "==> Copying the license"
 cp LICENSE "${APP}/Contents/Resources/LICENSE"
+cp THIRD-PARTY-NOTICES.md "${APP}/Contents/Resources/THIRD-PARTY-NOTICES.md"
 
 echo "==> Rendering the app icon"
 ICONSET="target/AppIcon.iconset"

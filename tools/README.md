@@ -1,7 +1,7 @@
 # tools
 
-PowerShell-скрипты для подготовки и публикации сборок. Они работают на Windows
-и используют `git` из `PATH`.
+Скрипты для подготовки и публикации сборок. PowerShell-часть работает на Windows
+и использует `git` из `PATH`; упаковка macOS запускается на macOS.
 
 | Скрипт | Назначение | Статус |
 |---|---|---|
@@ -10,6 +10,8 @@ PowerShell-скрипты для подготовки и публикации с
 | `Publish-Pack.ps1` | переписать URL, запушить в GitHub, собрать `dist/` + ZIP | legacy-обёртка |
 | `Check-RepoHygiene.ps1` | запретить артефакты/секреты в git | CI |
 | `capture_window.ps1` | снимок окна для проверки UI | dev |
+| `package-macos.sh` | universal `.app` + `.dmg` (macOS) | CI/release |
+| `generate-third-party-notices.py` | собрать `THIRD-PARTY-NOTICES.md` | release |
 
 ## Источник истины
 
@@ -69,6 +71,17 @@ Remove-Item Env:\ODIUM_GIT_TOKEN
 ```
 
 Ожидаемый вывод: `username=x-access-token` и `password=ghp_example`.
+
+## generate-third-party-notices.py
+
+```bash
+python tools/generate-third-party-notices.py
+```
+
+Собирает `THIRD-PARTY-NOTICES.md`: список всех сторонних крейтов, их лицензии и
+тексты. Для крейтов без лицензионного файла текст берётся из upstream-репозитория.
+Файл прикладывается к релизу и копируется внутрь macOS `.app`. Запускать после
+обновления `Cargo.lock`.
 
 ## Check-RepoHygiene.ps1
 
