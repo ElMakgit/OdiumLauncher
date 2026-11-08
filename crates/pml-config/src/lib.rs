@@ -271,6 +271,48 @@ impl JvmConfig {
         }
         Ok(())
     }
+
+    /// Applies `auto_xmx` and clamps both heaps to the machine's RAM. This is
+    /// the single source of truth for the UI and for headless/domain callers.
+    pub fn resolved(&self, total_ram_mb: u32) -> (u32, u32) {
+        let max_xmx = total_ram_mb.saturating_sub(1024).clamp(1024, 65_536);
+        let xmx = if self.auto_xmx {
+            (total_ram_mb / 2).max(1024)
+        } else {
+            self.xmx
+        };
+        let xmx = xmx.clamp(1024, max_xmx);
+        let xms = self.xms.clamp(512, xmx);
+        (xms, xmx)
+    }
+
+    /// Clamps a hand-edited config into the accepted range without discarding
+    /// the rest of the file.
+    fn repair(&mut self) {
+        self.xmx = self.xmx.clamp(512, 65_536);
+        self.xms = self.xms.clamp(512, self.xmx);
+    }
+}
+
+/// Physical RAM in MiB. Used to resolve `auto_xmx` outside the UI as well.
+pub fn total_system_ram_mb() -> u32 {
+    #[cfg(windows)]
+    {
+        use std::mem::MaybeUninit;
+        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+        // SAFETY: MEMORYSTATUSEX is a plain C struct. We zero it, set dwLength
+        // as required by the API and only read fields after a non-zero result.
+        unsafe {
+            let mut status = MaybeUninit::<MEMORYSTATUSEX>::zeroed();
+            let pointer = status.as_mut_ptr();
+            (*pointer).dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+            if GlobalMemoryStatusEx(pointer) != 0 {
+                return ((*pointer).ullTotalPhys / (1024 * 1024)) as u32;
+            }
+        }
+    }
+    // Conservative fallback for non-Windows builds and failed API calls.
+    8192
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -378,6 +420,26 @@ impl Config {
         self.download_concurrency = self.download_concurrency.clamp(1, 16);
         if self.schema_version == 0 {
             self.schema_version = CONFIG_SCHEMA_VERSION;
+        }
+        // A syntactically valid but out-of-range heap used to fail validation
+        // and abort the whole start without the `.broken` backup. Clamp it
+        // instead; the user keeps every other setting.
+        self.jvm.repair();
+        for jvm in self.instance_jvm.values_mut() {
+            jvm.repair();
+        }
+        if validate_nick(&self.nick).is_err() {
+            tracing::warn!(nick = %self.nick, "invalid nick in config, resetting to default");
+            self.nick = default_nick();
+        }
+        if self.server.validate().is_err() {
+            tracing::warn!("invalid server in config, resetting to default");
+            self.server = ServerSpec::default();
+        }
+        for source in &mut self.sources {
+            if source.name.trim().is_empty() {
+                source.name = source.id.clone();
+            }
         }
     }
 
@@ -582,7 +644,10 @@ impl PortablePaths {
         }
 
         let legacy = exe_dir.join(LEGACY_DIR_NAME);
-        if env_flag(PORTABLE_ENV) || exe_dir.join(PORTABLE_MARKER).is_file() {
+        if env_flag(PORTABLE_ENV)
+            || exe_dir.join(PORTABLE_MARKER).is_file()
+            || is_removable_path(exe_dir)
+        {
             return Self::from_root(legacy);
         }
 
@@ -683,6 +748,32 @@ fn env_flag(name: &str) -> bool {
     })
 }
 
+/// True when the executable lives on a removable drive (USB stick, SD card).
+/// A USB copy of the launcher must keep its data on the stick instead of
+/// silently migrating it into the host machine's `%LOCALAPPDATA%`.
+#[cfg(windows)]
+fn is_removable_path(path: &Path) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDriveTypeW;
+
+    const DRIVE_REMOVABLE: u32 = 2;
+    let Some(std::path::Component::Prefix(prefix)) = path.components().next() else {
+        return false;
+    };
+    let mut root = prefix.as_os_str().encode_wide().collect::<Vec<_>>();
+    if !root.ends_with(&[u16::from(b'\\')]) {
+        root.push(u16::from(b'\\'));
+    }
+    root.push(0);
+    // SAFETY: `root` is a NUL-terminated UTF-16 drive root.
+    unsafe { GetDriveTypeW(root.as_ptr()) == DRIVE_REMOVABLE }
+}
+
+#[cfg(not(windows))]
+fn is_removable_path(_path: &Path) -> bool {
+    false
+}
+
 /// Per-user application data directory. On Windows this is
 /// `%LOCALAPPDATA%\OdiumLauncher`; on other systems the XDG data directory.
 fn system_data_root() -> Option<PathBuf> {
@@ -707,7 +798,20 @@ fn system_data_root() -> Option<PathBuf> {
         }
         None
     }
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    {
+        // Native macOS location: ~/Library/Application Support/OdiumLauncher.
+        if let Some(home) = std::env::var_os("HOME").filter(|value| !value.is_empty()) {
+            return Some(
+                PathBuf::from(home)
+                    .join("Library")
+                    .join("Application Support")
+                    .join(SYSTEM_APP_DIR),
+            );
+        }
+        None
+    }
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     {
         if let Some(base) = std::env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
             return Some(PathBuf::from(base).join("odium-launcher"));
@@ -944,6 +1048,23 @@ impl ConfigStore {
 
         let mut store = Self { path, config };
         store.config.repair();
+        if let Err(error) = store.config.validate() {
+            // `repair()` handles the common hand-edit mistakes. Anything that
+            // still fails (for example an unsupported schema version) must not
+            // leave the player with a launcher that refuses to start: keep the
+            // original bytes in `.broken.<timestamp>` and continue with defaults.
+            tracing::error!(
+                path = %store.path.display(),
+                %error,
+                "config.json is invalid; backing it up and creating a default"
+            );
+            let backup = broken_path(&store.path);
+            fs::rename(&store.path, &backup).map_err(|source| ConfigError::Io {
+                path: store.path.clone(),
+                source,
+            })?;
+            store.config = Config::default();
+        }
         store.config.validate()?;
         store.save()?;
         Ok(store)

@@ -394,43 +394,14 @@ impl Publisher {
         };
 
         // Re-uploading the same version must not fail with "asset already
-        // exists", so remove the previous asset with this name first.
-        let assets_url = format!("{API}/repos/{}/releases/{}/assets", repo.slug(), release.id);
-        let (status, text) = self
-            .send_raw(self.request(Method::GET, &assets_url))
+        // exists", so remove the previous asset with this name first. The list
+        // endpoint is paginated; a release with more than 30 assets used to
+        // hide the old copy on page 2.
+        self.delete_asset_named(&repo, release.id, &asset_name, &report)
             .await?;
-        if status.is_success() {
-            let assets: Vec<Asset> = parse_json(&text)?;
-            for asset in assets
-                .into_iter()
-                .filter(|asset| asset.name.eq_ignore_ascii_case(&asset_name))
-            {
-                stage(&report, format!("Удаление старого ассета {}…", asset.name));
-                let url = format!("{API}/repos/{}/releases/assets/{}", repo.slug(), asset.id);
-                let _ = self.send_raw(self.request(Method::DELETE, &url)).await?;
-            }
-        }
 
         stage(&report, format!("Загрузка {}…", asset_name));
         let total = tokio::fs::metadata(&request.archive).await?.len();
-        let file = tokio::fs::File::open(&request.archive).await?;
-        let stream_report = report.clone();
-        let stream = futures_util::stream::try_unfold((file, 0u64), move |(mut file, sent)| {
-            let stream_report = stream_report.clone();
-            async move {
-                use tokio::io::AsyncReadExt as _;
-
-                let mut buffer = vec![0u8; UPLOAD_CHUNK];
-                let read = file.read(&mut buffer).await?;
-                if read == 0 {
-                    return Ok::<_, std::io::Error>(None);
-                }
-                buffer.truncate(read);
-                let sent = sent + read as u64;
-                stream_report(Progress::Upload { sent, total });
-                Ok(Some((buffer, (file, sent))))
-            }
-        });
 
         let upload_base = release
             .upload_url
@@ -438,19 +409,17 @@ impl Publisher {
             .next()
             .unwrap_or(&release.upload_url)
             .to_owned();
-        let upload = self.authorized(
-            self.client
-                .post(upload_base)
-                .query(&[("name", asset_name.as_str())])
-                .header(header::CONTENT_TYPE, "application/octet-stream")
-                .header(header::CONTENT_LENGTH, total)
-                .body(reqwest::Body::wrap_stream(stream)),
-        );
-        let (status, text) = self.send_raw(upload).await?;
-        if !status.is_success() {
-            return Err(api_error("загрузка ассета", status, &text));
-        }
-        let asset: Asset = parse_json(&text)?;
+        let asset = self
+            .upload_asset(
+                &repo,
+                release.id,
+                &upload_base,
+                &asset_name,
+                &request.archive,
+                total,
+                &report,
+            )
+            .await?;
         stage(&report, "Готово");
         report(Progress::Upload { sent: total, total });
 
@@ -458,6 +427,164 @@ impl Publisher {
             pack_url: asset.browser_download_url,
             page_url: release.html_url,
         })
+    }
+
+    /// Lists every asset of a release, following GitHub's `per_page` pages.
+    async fn list_release_assets(
+        &self,
+        repo: &Repo,
+        release_id: u64,
+    ) -> Result<Vec<Asset>, PublishError> {
+        let mut assets = Vec::new();
+        for page in 1..=100u32 {
+            let url = format!(
+                "{API}/repos/{}/releases/{release_id}/assets?per_page=100&page={page}",
+                repo.slug()
+            );
+            let (status, text) = self.send_raw(self.request(Method::GET, &url)).await?;
+            if !status.is_success() {
+                return Err(api_error("список ассетов релиза", status, &text));
+            }
+            let page_assets: Vec<Asset> = parse_json(&text)?;
+            let received = page_assets.len();
+            assets.extend(page_assets);
+            if received < 100 {
+                break;
+            }
+        }
+        Ok(assets)
+    }
+
+    async fn delete_asset_named(
+        &self,
+        repo: &Repo,
+        release_id: u64,
+        asset_name: &str,
+        report: &Reporter,
+    ) -> Result<(), PublishError> {
+        for asset in self
+            .list_release_assets(repo, release_id)
+            .await?
+            .into_iter()
+            .filter(|asset| asset.name.eq_ignore_ascii_case(asset_name))
+        {
+            stage(report, format!("Удаление старого ассета {}…", asset.name));
+            let url = format!("{API}/repos/{}/releases/assets/{}", repo.slug(), asset.id);
+            let (status, text) = self.send_raw(self.request(Method::DELETE, &url)).await?;
+            if !status.is_success() && status != StatusCode::NOT_FOUND {
+                return Err(api_error("удаление старого ассета", status, &text));
+            }
+        }
+        Ok(())
+    }
+
+    /// Uploads the archive with a fresh streaming body on every attempt.
+    /// `reqwest::Body::wrap_stream` is not cloneable, so the previous generic
+    /// retry always failed before the first socket write.
+    #[allow(clippy::too_many_arguments)]
+    async fn upload_asset(
+        &self,
+        repo: &Repo,
+        release_id: u64,
+        upload_base: &str,
+        asset_name: &str,
+        archive: &Path,
+        total: u64,
+        report: &Reporter,
+    ) -> Result<Asset, PublishError> {
+        let mut last_error: Option<PublishError> = None;
+        for attempt in 0..MAX_ATTEMPTS {
+            let file = tokio::fs::File::open(archive).await?;
+            let stream_report = report.clone();
+            let stream = futures_util::stream::try_unfold((file, 0u64), move |(mut file, sent)| {
+                let stream_report = stream_report.clone();
+                async move {
+                    use tokio::io::AsyncReadExt as _;
+
+                    let mut buffer = vec![0u8; UPLOAD_CHUNK];
+                    let read = file.read(&mut buffer).await?;
+                    if read == 0 {
+                        return Ok::<_, std::io::Error>(None);
+                    }
+                    buffer.truncate(read);
+                    let sent = sent + read as u64;
+                    stream_report(Progress::Upload { sent, total });
+                    Ok(Some((buffer, (file, sent))))
+                }
+            });
+
+            let upload = self.authorized(
+                self.client
+                    .post(upload_base)
+                    .query(&[("name", asset_name)])
+                    .header(header::CONTENT_TYPE, "application/octet-stream")
+                    .header(header::CONTENT_LENGTH, total)
+                    .body(reqwest::Body::wrap_stream(stream)),
+            );
+            match upload.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    let text = match response.text().await {
+                        Ok(text) => text,
+                        Err(error) if retryable_network(&error) && attempt + 1 < MAX_ATTEMPTS => {
+                            let delay = retry_delay(attempt);
+                            tracing::warn!(
+                                attempt = attempt + 1,
+                                delay_ms = delay.as_millis(),
+                                "GitHub upload response failed, retrying"
+                            );
+                            last_error = Some(PublishError::Http(error));
+                            tokio::time::sleep(delay).await;
+                            continue;
+                        }
+                        Err(error) => return Err(error.into()),
+                    };
+                    if status.is_success() {
+                        return parse_json(&text);
+                    }
+                    if status == StatusCode::UNPROCESSABLE_ENTITY && text.contains("already_exists")
+                    {
+                        // Another publisher (or a previous interrupted run)
+                        // created the asset between our list and this upload.
+                        self.delete_asset_named(repo, release_id, asset_name, report)
+                            .await?;
+                        last_error = Some(api_error("загрузка ассета", status, &text));
+                        continue;
+                    }
+                    if retryable_status(status) && attempt + 1 < MAX_ATTEMPTS {
+                        let delay = retry_delay(attempt);
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            status = status.as_u16(),
+                            delay_ms = delay.as_millis(),
+                            "GitHub upload failed, retrying"
+                        );
+                        last_error = Some(api_error("загрузка ассета", status, &text));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(api_error("загрузка ассета", status, &text));
+                }
+                Err(error) => {
+                    if retryable_network(&error) && attempt + 1 < MAX_ATTEMPTS {
+                        let delay = retry_delay(attempt);
+                        tracing::warn!(
+                            attempt = attempt + 1,
+                            delay_ms = delay.as_millis(),
+                            %error,
+                            "GitHub upload network error, retrying"
+                        );
+                        last_error = Some(PublishError::Http(error));
+                        tokio::time::sleep(delay).await;
+                        continue;
+                    }
+                    return Err(error.into());
+                }
+            }
+        }
+        Err(last_error.unwrap_or_else(|| {
+            PublishError::Api("загрузка ассета не удалась без конкретной ошибки".to_owned())
+        }))
     }
 
     /// Pushes `manifest.json` and `overrides/**` in one commit and returns the
@@ -1028,6 +1155,13 @@ pub fn build_dist(request: &DistRequest) -> Result<DistResult, PublishError> {
         std::fs::copy(&exe_source, staging.join("OdiumLauncher.exe"))?;
         exe_copied = true;
     }
+    // A player folder must stay self-contained: without the marker the
+    // launcher would move `launcher_data` into %LOCALAPPDATA% on first start,
+    // which breaks the "copy the folder to another PC" promise.
+    std::fs::write(
+        staging.join(pml_config::PORTABLE_MARKER),
+        "Odium Launcher portable build\n",
+    )?;
 
     let readme = format!(
         "Odium Launcher pack\r\n\
@@ -1035,9 +1169,11 @@ pub fn build_dist(request: &DistRequest) -> Result<DistResult, PublishError> {
          Сборка:    {}\r\n\
          Параметры: {}\r\n\r\n\
          Как играть:\r\n\
-         1. Держите OdiumLauncher.exe и папку launcher_data рядом.\r\n\
+         1. Держите OdiumLauncher.exe, portable.flag и папку launcher_data рядом.\r\n\
          2. Запустите OdiumLauncher.exe.\r\n\
          3. Введите ник и нажмите «Играть».\r\n\r\n\
+         portable.flag заставляет лаунчер хранить все данные в launcher_data\r\n\
+         рядом с exe, поэтому папку можно целиком перенести на другой компьютер.\r\n\r\n\
          Лаунчер сам скачает Java, загрузчик, моды и конфиги.\r\n\
          Сервер добавится в список сетевых игр.\r\n",
         request.source_name, request.pack_label

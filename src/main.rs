@@ -29,7 +29,6 @@ fn main() -> Result<()> {
         .context("не удалось загрузить config.json лаунчера")?;
     tracing::info!(
         source = %store.config().active_source_id,
-        nick = %store.config().nick,
         "configuration loaded"
     );
 
@@ -55,7 +54,15 @@ fn main() -> Result<()> {
 }
 
 fn init_logging(paths: &PortablePaths) -> Result<tracing_appender::non_blocking::WorkerGuard> {
-    let appender = tracing_appender::rolling::daily(paths.logs_dir(), "launcher.log");
+    // Daily files with a 14-day retention. The old `rolling::daily` helper
+    // never deleted anything, so a long-lived portable install grew without
+    // bound.
+    let appender = tracing_appender::rolling::Builder::new()
+        .rotation(tracing_appender::rolling::Rotation::DAILY)
+        .filename_prefix("launcher.log")
+        .max_log_files(14)
+        .build(paths.logs_dir())
+        .context("не удалось открыть журнал лаунчера")?;
     let (file_writer, guard) = tracing_appender::non_blocking(appender);
     let filter = EnvFilter::try_from_default_env()
         .unwrap_or_else(|_| EnvFilter::new("info,pml_ui=debug,pml_downloader=debug"));

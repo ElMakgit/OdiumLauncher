@@ -22,10 +22,53 @@ use tokio::task::JoinSet;
 
 pub const MIN_JAVA_MAJOR: u32 = 21;
 
-/// Adoptium download endpoint for the current OS and 64-bit architecture.
-/// Minecraft only needs a runtime, so the smaller `jre` image is requested.
-/// Minecraft 1.21 does not run on a 32-bit JVM, so x86 is never requested.
-pub fn adoptium_latest_url() -> String {
+/// Java major required by a Minecraft version.
+///
+/// Mojang's own launcher uses the same three breakpoints: 1.17 moved to Java
+/// 16, 1.18 to 17 and 1.20.5 to 21. Java 17 also runs 1.17.x, so the launcher
+/// requests the smallest Adoptium LTS that satisfies the version.
+pub fn required_java_major(mc_version: &str) -> u32 {
+    let mut parts = mc_version.split(|character: char| !character.is_ascii_digit());
+    let major = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(1);
+    if major != 1 {
+        // Snapshots (`24w14a`) and future version schemes target modern Java.
+        return MIN_JAVA_MAJOR;
+    }
+    let minor = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    let patch = parts
+        .next()
+        .and_then(|part| part.parse::<u32>().ok())
+        .unwrap_or(0);
+    if minor <= 16 {
+        8
+    } else if minor == 17 || minor <= 19 {
+        17
+    } else if minor == 20 {
+        if patch >= 5 {
+            MIN_JAVA_MAJOR
+        } else {
+            17
+        }
+    } else {
+        MIN_JAVA_MAJOR
+    }
+}
+
+/// Adoptium download endpoint for the current OS, 64-bit architecture and the
+/// requested Java major. Minecraft only needs a runtime, so the smaller `jre`
+/// image is requested first; [`download_temurin`] falls back to `jdk` for
+/// releases where Adoptium publishes no JRE build.
+pub fn adoptium_latest_url(major: u32) -> String {
+    adoptium_url(major, "jre")
+}
+
+fn adoptium_url(major: u32, image_type: &str) -> String {
     let os = if cfg!(windows) {
         "windows"
     } else if cfg!(target_os = "macos") {
@@ -39,7 +82,7 @@ pub fn adoptium_latest_url() -> String {
         "x64"
     };
     format!(
-        "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture={architecture}&image_type=jre&os={os}&vendor=eclipse"
+        "https://api.adoptium.net/v3/assets/latest/{major}/hotspot?architecture={architecture}&image_type={image_type}&os={os}&vendor=eclipse"
     )
 }
 
@@ -62,7 +105,7 @@ impl JavaOrigin {
             Self::JavaHome => "JAVA_HOME",
             Self::Path => "PATH",
             Self::Common => "системная",
-            Self::Downloaded => "Temurin 21",
+            Self::Downloaded => "Temurin",
         }
     }
 }
@@ -92,8 +135,8 @@ pub struct JavaProbe {
 
 #[derive(Debug, Error)]
 pub enum JavaError {
-    #[error("подходящая Java {MIN_JAVA_MAJOR}+ не найдена")]
-    NotFound,
+    #[error("подходящая Java {0}+ не найдена")]
+    NotFound(u32),
     #[error("не удалось запустить Java {path}: {source}")]
     Spawn {
         path: PathBuf,
@@ -245,7 +288,7 @@ async fn probe_java(java_exe: &Path) -> Result<JavaProbe, JavaError> {
 
 /// Probes every plausible candidate concurrently. Broken shortcuts and stale
 /// cache entries simply produce no result instead of failing the whole scan.
-pub async fn discover_all(paths: &PortablePaths) -> Vec<JavaInstallation> {
+pub async fn discover_all(paths: &PortablePaths, required: u32) -> Vec<JavaInstallation> {
     let paths = paths.clone();
     let candidates = match tokio::task::spawn_blocking(move || collect_candidates(&paths)).await {
         Ok(candidates) => candidates,
@@ -279,20 +322,22 @@ pub async fn discover_all(paths: &PortablePaths) -> Vec<JavaInstallation> {
             Err(error) => tracing::debug!(%error, "java probe task failed"),
         }
     }
-    found.sort_by_key(|installation| (installation.major != MIN_JAVA_MAJOR, installation.major));
+    found.sort_by_key(|installation| (installation.major != required, installation.major));
     found
 }
 
-/// Picks Java 21 when available, otherwise the lowest major above 21 (closest
-/// to the version Minecraft 1.21.1 was built for). Older runtimes are rejected.
-pub fn select_best(installations: &[JavaInstallation]) -> Option<JavaInstallation> {
+/// Picks the requested major when available, otherwise the lowest major above
+/// it (closest to the version Minecraft was built for). Older runtimes are
+/// rejected.
+pub fn select_best(installations: &[JavaInstallation], required: u32) -> Option<JavaInstallation> {
     installations
         .iter()
-        // A 32-bit JVM cannot honour -Xmx4096M; probing rejects it early with
-        // a clear reason instead of a cryptic game crash later. `bits == 0`
-        // means the JVM did not report os.arch and is kept for compatibility.
-        .filter(|installation| installation.major >= MIN_JAVA_MAJOR && installation.bits != 32)
-        .min_by_key(|installation| (installation.major != MIN_JAVA_MAJOR, installation.major))
+        // A 32-bit JVM cannot honour the default multi-gigabyte heap; probing
+        // rejects it early with a clear reason instead of a cryptic game crash
+        // later. `bits == 0` means the JVM did not report os.arch and is kept
+        // for compatibility.
+        .filter(|installation| installation.major >= required && installation.bits != 32)
+        .min_by_key(|installation| (installation.major != required, installation.major))
         .cloned()
 }
 
@@ -343,9 +388,13 @@ fn collect_candidates(paths: &PortablePaths) -> Vec<(PathBuf, JavaOrigin)> {
                     .and_then(Path::file_name)
                     .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
             {
-                let is_downloaded = entry
-                    .path()
-                    .starts_with(paths.java_dir().join("temurin-21"));
+                let is_downloaded = entry.path().starts_with(paths.java_dir())
+                    && entry.path().components().any(|component| {
+                        component
+                            .as_os_str()
+                            .to_string_lossy()
+                            .starts_with("temurin-")
+                    });
                 push(
                     entry.into_path(),
                     if is_downloaded {
@@ -437,10 +486,12 @@ fn save_cache(paths: &PortablePaths, installation: &JavaInstallation) -> Result<
     Ok(())
 }
 
-/// Returns a usable Java 21+ runtime, downloading Temurin 21 if necessary.
+/// Returns a usable Java runtime for `required`, downloading Temurin if
+/// necessary.
 pub async fn ensure_java(
     paths: &PortablePaths,
     downloader: &Downloader,
+    required: u32,
     progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
     cancel: Option<CancelToken>,
 ) -> Result<JavaInstallation, JavaError> {
@@ -454,7 +505,7 @@ pub async fn ensure_java(
     if let Some(cached) = read_cached(paths) {
         if cached.is_file() {
             if let Ok(probe) = probe_java(&cached).await {
-                if probe.major >= MIN_JAVA_MAJOR && probe.bits != 32 {
+                if probe.major >= required && probe.bits != 32 {
                     let installation = JavaInstallation {
                         home: cached
                             .parent()
@@ -478,8 +529,8 @@ pub async fn ensure_java(
         }
     }
 
-    let installations = discover_all(paths).await;
-    if let Some(best) = select_best(&installations) {
+    let installations = discover_all(paths, required).await;
+    if let Some(best) = select_best(&installations, required) {
         tracing::info!(
             java = %best.java_exe.display(),
             major = best.major,
@@ -492,28 +543,32 @@ pub async fn ensure_java(
         return Ok(best);
     }
 
-    download_temurin_21(paths, downloader, progress, cancel).await
+    download_temurin(paths, downloader, required, progress, cancel).await
 }
 
-async fn download_temurin_21(
+async fn download_temurin(
     paths: &PortablePaths,
     downloader: &Downloader,
+    required: u32,
     progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
     cancel: Option<CancelToken>,
 ) -> Result<JavaInstallation, JavaError> {
-    tracing::info!("no Java 21+ found, downloading Eclipse Temurin 21");
-    let response = downloader
-        .client()
-        .get(adoptium_latest_url())
-        .send()
-        .await?
-        .error_for_status()?
-        .json::<Vec<AdoptiumAsset>>()
-        .await?;
+    tracing::info!(
+        required,
+        "no suitable Java found, downloading Eclipse Temurin"
+    );
+    let mut assets = fetch_adoptium_assets(downloader, required, "jre").await?;
+    if assets.is_empty() {
+        tracing::warn!(
+            required,
+            "Adoptium has no JRE build for this major, falling back to a JDK"
+        );
+        assets = fetch_adoptium_assets(downloader, required, "jdk").await?;
+    }
 
     // The endpoint may return several builds (for example a point release per
     // vendor); take the newest numeric version instead of the first array item.
-    let asset = response
+    let asset = assets
         .into_iter()
         .filter(|asset| !asset.binary.package.link.trim().is_empty())
         .max_by_key(asset_version_key)
@@ -523,7 +578,7 @@ async fn download_temurin_21(
         .name
         .clone()
         .filter(|name| !name.trim().is_empty())
-        .unwrap_or_else(|| "temurin21.zip".to_owned());
+        .unwrap_or_else(|| format!("temurin{required}.zip"));
     let archive = paths.temp_dir().join(sanitize_file_name(&archive_name));
 
     let task = DownloadTask::new(
@@ -535,11 +590,11 @@ async fn download_temurin_21(
             .filter(|hash| !hash.trim().is_empty()),
         HashAlgo::Sha256,
         package.size,
-        "Temurin 21".to_owned(),
+        format!("Temurin {required}"),
     );
     downloader.download_many(vec![task], progress).await?;
 
-    let extract_dir = paths.java_dir().join("temurin-21");
+    let extract_dir = paths.java_dir().join(format!("temurin-{required}"));
     let existing = find_java_executable(&extract_dir);
     let java_exe = match existing {
         Some(path) => path,
@@ -566,9 +621,9 @@ async fn download_temurin_21(
     };
 
     let probe = probe_java(&java_exe).await?;
-    if probe.major < MIN_JAVA_MAJOR {
+    if probe.major < required {
         return Err(JavaError::Adoptium(format!(
-            "скачалась Java {}, а нужна {MIN_JAVA_MAJOR}+",
+            "скачалась Java {}, а нужна {required}+",
             probe.major
         )));
     }
@@ -599,9 +654,25 @@ async fn download_temurin_21(
     tracing::info!(
         java = %installation.java_exe.display(),
         version = %installation.version,
-        "Temurin 21 installed"
+        major = required,
+        "Temurin installed"
     );
     Ok(installation)
+}
+
+async fn fetch_adoptium_assets(
+    downloader: &Downloader,
+    major: u32,
+    image_type: &str,
+) -> Result<Vec<AdoptiumAsset>, JavaError> {
+    Ok(downloader
+        .client()
+        .get(adoptium_url(major, image_type))
+        .send()
+        .await?
+        .error_for_status()?
+        .json::<Vec<AdoptiumAsset>>()
+        .await?)
 }
 
 /// Numeric release key used to pick the newest Adoptium build from the API's
@@ -716,7 +787,7 @@ mod tests {
             origin: JavaOrigin::Common,
         };
         let installations = vec![make(25, "a"), make(17, "b"), make(21, "c"), make(22, "d")];
-        let best = select_best(&installations).expect("best");
+        let best = select_best(&installations, 21).expect("best");
         assert_eq!(best.major, 21);
         assert_eq!(best.java_exe, PathBuf::from("c"));
 
@@ -724,13 +795,32 @@ mod tests {
         // version would otherwise win.
         let mut x86 = make(21, "x86");
         x86.bits = 32;
-        assert!(select_best(&[x86, make(22, "d")]).is_some_and(|best| best.major == 22));
+        assert!(select_best(&[x86, make(22, "d")], 21).is_some_and(|best| best.major == 22));
 
         let installations = vec![make(25, "a"), make(22, "d")];
-        assert_eq!(select_best(&installations).map(|i| i.major), Some(22));
+        assert_eq!(select_best(&installations, 21).map(|i| i.major), Some(22));
 
         let installations = vec![make(17, "b"), make(8, "e")];
-        assert!(select_best(&installations).is_none());
+        assert!(select_best(&installations, 21).is_none());
+
+        // An older pack may explicitly request Java 8; a modern runtime is
+        // still acceptable but the exact major wins.
+        let installations = vec![make(21, "a"), make(8, "b"), make(17, "c")];
+        assert_eq!(select_best(&installations, 8).map(|i| i.major), Some(8));
+    }
+
+    #[test]
+    fn required_java_major_follows_minecraft_breakpoints() {
+        assert_eq!(required_java_major("1.7.10"), 8);
+        assert_eq!(required_java_major("1.12.2"), 8);
+        assert_eq!(required_java_major("1.16.5"), 8);
+        assert_eq!(required_java_major("1.17.1"), 17);
+        assert_eq!(required_java_major("1.18.2"), 17);
+        assert_eq!(required_java_major("1.20.4"), 17);
+        assert_eq!(required_java_major("1.20.5"), 21);
+        assert_eq!(required_java_major("1.20.6"), 21);
+        assert_eq!(required_java_major("1.21.1"), 21);
+        assert_eq!(required_java_major("24w14a"), 21);
     }
 
     #[test]
@@ -746,7 +836,8 @@ mod tests {
 
     #[test]
     fn adoptium_url_matches_the_current_platform() {
-        let url = adoptium_latest_url();
+        let url = adoptium_latest_url(21);
+        assert!(url.contains("/21/hotspot"));
         assert!(url.contains("image_type=jre"));
         assert!(url.contains("vendor=eclipse"));
         if cfg!(windows) {

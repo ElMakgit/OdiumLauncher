@@ -177,10 +177,23 @@ impl LauncherApp {
             }
 
             ui.add_space(4.0);
-            if pml_theme::button(ui, self.theme, "Проверить обновления", !self.busy).clicked()
-            {
-                self.refresh_manifest();
-            }
+            ui.horizontal(|ui| {
+                if pml_theme::button(ui, self.theme, "Проверить обновления", !self.busy).clicked()
+                {
+                    self.refresh_manifest();
+                }
+                let can_reset = !self.busy && !self.game_running && self.reset_rx.is_none();
+                if pml_theme::button(ui, self.theme, "Удалить файлы сборки", can_reset).clicked()
+                {
+                    self.confirm_reset = true;
+                }
+            });
+            ui.label(
+                RichText::new(
+                    "Удаление заставит лаунчер скачать модпак заново. Миры и скриншоты сохранятся.",
+                )
+                .small(),
+            );
         });
     }
 
@@ -535,6 +548,60 @@ impl LauncherApp {
             });
         if !window_open || ok_clicked {
             self.error = None;
+        }
+    }
+
+    pub(crate) fn draw_reset_confirm(&mut self, ctx: &egui::Context) {
+        if !self.confirm_reset {
+            return;
+        }
+        let mut open = true;
+        let mut confirmed = false;
+        let mut cancelled = false;
+        egui::Window::new("Удалить файлы сборки?")
+            .collapsible(false)
+            .resizable(false)
+            .open(&mut open)
+            .anchor(Align2::CENTER_CENTER, Vec2::ZERO)
+            .show(ctx, |ui| {
+                ui.set_max_width(400.0);
+                ui.label("Лаунчер удалит моды, конфиги и другие файлы, установленные сборкой.");
+                ui.label("При следующем запуске они скачаются заново.");
+                ui.add_space(4.0);
+                ui.label(
+                    RichText::new("Миры (saves), скриншоты и логи останутся на месте.").small(),
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if pml_theme::primary_button_sized(
+                        ui,
+                        self.theme,
+                        "Удалить",
+                        Some(Vec2::new(100.0, 24.0)),
+                        true,
+                    )
+                    .clicked()
+                    {
+                        confirmed = true;
+                    }
+                    if pml_theme::button_sized(
+                        ui,
+                        self.theme,
+                        "Отмена",
+                        Some(Vec2::new(100.0, 24.0)),
+                        true,
+                    )
+                    .clicked()
+                    {
+                        cancelled = true;
+                    }
+                });
+            });
+        if confirmed {
+            self.confirm_reset = false;
+            self.delete_build_files();
+        } else if cancelled || !open {
+            self.confirm_reset = false;
         }
     }
 

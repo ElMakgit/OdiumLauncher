@@ -107,11 +107,14 @@ pub(super) async fn run_pipeline(
         }
     });
 
-    tx.send(UiEvent::Stage("Поиск Java 21…".to_owned())).ok();
+    let required_java = pml_java::required_java_major(&manifest.mc_version);
+    tx.send(UiEvent::Stage(format!("Поиск Java {required_java}…")))
+        .ok();
     let java = tokio::select! {
         result = ensure_java(
             &paths,
             &downloader,
+            required_java,
             Some(download_tx.clone()),
             Some(cancel.clone()),
         ) => {
@@ -236,6 +239,16 @@ pub(super) async fn run_pipeline(
         .ok();
     let minecraft = Minecraft::new(paths.clone(), downloader.clone());
     let user = UserProfile::offline(config.nick.clone());
+    // Resolve `auto_xmx` here, in the domain pipeline, rather than only in the
+    // UI. Any caller that starts a launch gets the same half-of-RAM policy.
+    let (xms, xmx) = config
+        .jvm_for(&source.id)
+        .resolved(pml_config::total_system_ram_mb());
+    let launch_jvm = pml_config::JvmConfig {
+        xms,
+        xmx,
+        auto_xmx: false,
+    };
     let plan = stage_result(
         minecraft
             .prepare_launch(LaunchRequest {
@@ -244,7 +257,7 @@ pub(super) async fn run_pipeline(
                 loader_profile: Some(&profile),
                 user: &user,
                 server: &server,
-                jvm: &config.jvm,
+                jvm: &launch_jvm,
                 progress: Some(download_tx.clone()),
             })
             .await,

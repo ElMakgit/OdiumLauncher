@@ -103,6 +103,8 @@ struct LauncherApp {
     events_rx: Option<mpsc::UnboundedReceiver<UiEvent>>,
     cancel: Option<CancelToken>,
     manifest_rx: Option<mpsc::UnboundedReceiver<Result<Manifest, String>>>,
+    reset_rx: Option<mpsc::UnboundedReceiver<Result<pml_modpack::ResetReport, String>>>,
+    confirm_reset: bool,
     manifest: Option<Manifest>,
     manifest_error: Option<String>,
     java: Option<JavaInstallation>,
@@ -155,13 +157,7 @@ impl LauncherApp {
         // slider disables auto mode so an explicit choice survives restarts.
         let jvm = config.jvm_for(&config.active_source_id);
         let auto_xmx = jvm.auto_xmx;
-        let xmx = if auto_xmx {
-            (total_ram_mb / 2).max(1024)
-        } else {
-            jvm.xmx
-        };
-        let xmx = xmx.clamp(1024, max_xmx);
-        let xms = jvm.xms.clamp(512, xmx);
+        let (xms, xmx) = jvm.resolved(total_ram_mb);
         Self {
             paths,
             source_id: config.active_source_id.clone(),
@@ -178,6 +174,8 @@ impl LauncherApp {
             events_rx: None,
             cancel: None,
             manifest_rx: None,
+            reset_rx: None,
+            confirm_reset: false,
             manifest: None,
             manifest_error: None,
             java: None,
@@ -238,13 +236,9 @@ impl LauncherApp {
     fn apply_jvm_for_active_source(&mut self) {
         let jvm = self.store.config().jvm_for(&self.source_id);
         self.auto_xmx = jvm.auto_xmx;
-        let xmx = if jvm.auto_xmx {
-            (self.total_ram_mb / 2).max(1024)
-        } else {
-            jvm.xmx
-        };
-        self.xmx = xmx.clamp(1024, self.max_xmx);
-        self.xms = jvm.xms.clamp(512, self.xmx);
+        let (xms, xmx) = jvm.resolved(self.total_ram_mb);
+        self.xmx = xmx;
+        self.xms = xms;
     }
 
     fn select_source(&mut self, id: &str) {
@@ -303,6 +297,12 @@ impl LauncherApp {
     }
 
     fn refresh_manifest(&mut self) {
+        // A click while a check is already in flight used to spawn a second
+        // task and drop the first receiver; both requests still ran. Ignore
+        // repeated clicks instead.
+        if self.manifest_rx.is_some() {
+            return;
+        }
         let Some(source) = self.selected_source() else {
             self.manifest_error = Some("Сборка не выбрана".to_owned());
             return;
@@ -318,6 +318,61 @@ impl LauncherApp {
                 .await
                 .map(|pack| pack.manifest)
                 .map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        });
+    }
+
+    /// Removes the pack-managed files of the active source and its cached
+    /// manifest/.mrpack, so the next launch downloads the build again. Worlds
+    /// and screenshots are preserved by `pml_modpack::reset_instance`.
+    fn delete_build_files(&mut self) {
+        if self.busy || self.game_running {
+            self.error = Some("Нельзя удалять файлы сборки во время запуска или игры".to_owned());
+            return;
+        }
+        if self.reset_rx.is_some() {
+            return;
+        }
+        let Some(source) = self.selected_source() else {
+            self.error = Some("Сборка не выбрана".to_owned());
+            return;
+        };
+        let instance_dir = match self.paths.instance_dir(&source.id) {
+            Ok(path) => path,
+            Err(error) => {
+                self.error = Some(error.to_string());
+                return;
+            }
+        };
+        let meta = self.paths.meta_dir();
+        let url = source.manifest_url.clone();
+        let manifest_files = self
+            .manifest
+            .as_ref()
+            .map(|manifest| {
+                manifest
+                    .files
+                    .iter()
+                    .chain(manifest.optional_files.iter())
+                    .map(|file| file.path.clone())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.reset_rx = Some(rx);
+        self.status = "Удаление файлов сборки…".to_owned();
+        self.runtime.spawn(async move {
+            let result = match pml_modpack::reset_instance(&instance_dir, &manifest_files).await {
+                Ok(report) => {
+                    // A locked cache file must not turn a successful reset into
+                    // an error: the next refresh revalidates it anyway.
+                    if let Err(error) = pml_modpack::clear_source_cache(&meta, &url) {
+                        tracing::warn!(%error, "could not clear the source cache");
+                    }
+                    Ok(report)
+                }
+                Err(error) => Err(error.to_string()),
+            };
             let _ = tx.send(result);
         });
     }
@@ -525,6 +580,35 @@ impl LauncherApp {
             }
         }
 
+        if let Some(mut receiver) = self.reset_rx.take() {
+            match receiver.try_recv() {
+                Ok(Ok(report)) => {
+                    self.manifest = None;
+                    self.manifest_error = None;
+                    self.status = if report.failed == 0 {
+                        format!(
+                            "Удалено файлов сборки: {}. Скачиваю список…",
+                            report.removed
+                        )
+                    } else {
+                        format!(
+                            "Удалено файлов: {}, не удалось удалить: {}",
+                            report.removed, report.failed
+                        )
+                    };
+                    self.refresh_manifest();
+                }
+                Ok(Err(error)) => {
+                    self.status = "Ошибка удаления файлов сборки".to_owned();
+                    self.error = Some(error);
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    self.reset_rx = Some(receiver);
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {}
+            }
+        }
+
         if let Some(mut receiver) = self.log_rx.take() {
             match receiver.try_recv() {
                 Ok(lines) => self.log_lines = lines,
@@ -604,6 +688,11 @@ impl LauncherApp {
 
 impl eframe::App for LauncherApp {
     fn update(&mut self, ctx: &egui::Context, frame: &mut eframe::Frame) {
+        // The nick and sliders are edited in-place; save them even when the
+        // player closes the window without pressing "Играть".
+        if ctx.input(|input| input.viewport().close_requested()) {
+            self.persist();
+        }
         self.sync_glass(frame);
         self.backdrop.poll(ctx);
         if self.theme == Theme::Win7 {
@@ -653,6 +742,7 @@ impl eframe::App for LauncherApp {
             });
 
         self.draw_error_window(ctx);
+        self.draw_reset_confirm(ctx);
         self.draw_publisher(ctx);
         self.draw_settings(ctx);
         self.draw_welcome(ctx);

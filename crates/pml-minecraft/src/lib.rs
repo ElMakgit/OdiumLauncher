@@ -28,6 +28,47 @@ pub const VERSION_MANIFEST_URL: &str =
 const ASSET_BASE_URL: &str = "https://resources.download.minecraft.net";
 const DEFAULT_MAVEN_BASE: &str = "https://libraries.minecraft.net/";
 
+/// Hosts a version JSON may reference for executable content (the client jar,
+/// libraries and natives). A loader profile is third-party data; without this
+/// list a malicious profile could point a classpath entry at `file://` or an
+/// attacker-controlled host and get code executed inside the game JVM.
+const ALLOWED_ARTIFACT_HOSTS: &[&str] = &[
+    "piston-data.mojang.com",
+    "piston-meta.mojang.com",
+    "launcher.mojang.com",
+    "libraries.minecraft.net",
+    "resources.download.minecraft.net",
+    "maven.minecraftforge.net",
+    "files.minecraftforge.net",
+    "maven.neoforged.net",
+    "maven.fabricmc.net",
+    "maven.quiltmc.org",
+    "meta.fabricmc.net",
+    "meta.quiltmc.org",
+];
+
+fn validate_artifact_url(url: &str) -> Result<(), MinecraftError> {
+    let parsed = reqwest::Url::parse(url).map_err(|_| MinecraftError::InvalidArtifactUrl {
+        url: url.to_owned(),
+        reason: "не URL".to_owned(),
+    })?;
+    if parsed.scheme() != "https" {
+        return Err(MinecraftError::InvalidArtifactUrl {
+            url: url.to_owned(),
+            reason: "разрешён только HTTPS".to_owned(),
+        });
+    }
+    let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
+    if ALLOWED_ARTIFACT_HOSTS.contains(&host.as_str()) {
+        Ok(())
+    } else {
+        Err(MinecraftError::InvalidArtifactUrl {
+            url: url.to_owned(),
+            reason: format!("недоверенный хост {host}"),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionJson {
@@ -328,16 +369,27 @@ impl Minecraft {
 
         // Keep the instance ready for the player: the pack server is present in
         // the multiplayer list and the interface starts in Russian. These are
-        // cosmetic side files, so a failure must not abort the launch.
-        if let Err(error) = nbt::ensure_server_entry(
-            request.instance_dir,
-            SERVER_LIST_NAME,
-            &request.server.display(),
-        ) {
-            tracing::warn!(%error, "servers.dat was not updated");
-        }
-        if let Err(error) = options::ensure_russian_language(request.instance_dir) {
-            tracing::warn!(%error, "options.txt was not updated");
+        // cosmetic side files, so a failure must not abort the launch. Both
+        // helpers use blocking `std::fs`, so they run off the async worker.
+        let instance_for_side_files = request.instance_dir.to_path_buf();
+        let server_display = request.server.display();
+        let side_files = tokio::task::spawn_blocking(move || {
+            let server = nbt::ensure_server_entry(
+                &instance_for_side_files,
+                SERVER_LIST_NAME,
+                &server_display,
+            )
+            .map_err(|error| format!("servers.dat: {error}"));
+            let language = options::ensure_russian_language(&instance_for_side_files)
+                .map_err(|error| format!("options.txt: {error}"));
+            (server, language)
+        })
+        .await;
+        match side_files {
+            Ok((Err(error), _)) => tracing::warn!(%error, "servers.dat was not updated"),
+            Ok((_, Err(error))) => tracing::warn!(%error, "options.txt was not updated"),
+            Ok((Ok(()), Ok(()))) => {}
+            Err(error) => tracing::warn!(%error, "instance side-file task failed"),
         }
 
         let manifest = self.fetch_version_manifest().await?;
@@ -462,6 +514,7 @@ impl Minecraft {
         } else {
             Some(entry.sha1.clone())
         };
+        validate_artifact_url(&entry.url)?;
         let task = DownloadTask::new(
             entry.url.clone(),
             cache.clone(),
@@ -496,6 +549,7 @@ impl Minecraft {
             .as_ref()
             .and_then(|downloads| downloads.client.as_ref())
             .ok_or(MinecraftError::MissingField("downloads.client"))?;
+        validate_artifact_url(&client.url)?;
         let dest = self
             .paths
             .versions_dir()
@@ -536,19 +590,24 @@ impl Minecraft {
             .versions_dir()
             .join(version_id)
             .join(format!("{version_id}.jar"));
-        if dest.is_file() {
-            return Ok(dest);
+        let source_len = tokio::fs::metadata(client_jar)
+            .await
+            .map_err(|source| io_error(client_jar, source))?
+            .len();
+        if let Ok(metadata) = tokio::fs::metadata(&dest).await {
+            if metadata.len() == source_len {
+                return Ok(dest);
+            }
+            // A previous interrupted copy left a truncated jar. It cannot be
+            // used as a classpath entry and would fail the launch forever.
+            let _ = tokio::fs::remove_file(&dest).await;
         }
         if let Some(parent) = dest.parent() {
             tokio::fs::create_dir_all(parent)
                 .await
                 .map_err(|source| io_error(parent, source))?;
         }
-        if tokio::fs::hard_link(client_jar, &dest).await.is_err() {
-            tokio::fs::copy(client_jar, &dest)
-                .await
-                .map_err(|source| io_error(&dest, source))?;
-        }
+        copy_atomic(client_jar, &dest).await?;
         Ok(dest)
     }
 
@@ -562,6 +621,7 @@ impl Minecraft {
             .asset_index
             .as_ref()
             .ok_or(MinecraftError::MissingField("assetIndex"))?;
+        validate_artifact_url(&index_meta.url)?;
         let index_path = self
             .paths
             .assets_dir()
@@ -624,6 +684,7 @@ impl Minecraft {
                 if client.file.url.is_empty() {
                     None
                 } else {
+                    validate_artifact_url(&client.file.url)?;
                     let file_id = client
                         .file
                         .id
@@ -693,14 +754,22 @@ impl Minecraft {
                     .await
                     .map_err(|source| io_error(parent, source))?;
             }
-            if tokio::fs::metadata(&dest).await.is_ok() {
-                continue;
+            let source_len = match tokio::fs::metadata(&source).await {
+                Ok(metadata) => metadata.len(),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // The asset download failed earlier in the pipeline; the
+                    // sync step reports it. Do not create a dangling entry.
+                    continue;
+                }
+                Err(source_error) => return Err(io_error(&source, source_error)),
+            };
+            if let Ok(metadata) = tokio::fs::metadata(&dest).await {
+                if metadata.len() == source_len {
+                    continue;
+                }
+                let _ = tokio::fs::remove_file(&dest).await;
             }
-            if tokio::fs::hard_link(&source, &dest).await.is_err() {
-                tokio::fs::copy(&source, &dest)
-                    .await
-                    .map_err(|source| io_error(&dest, source))?;
-            }
+            copy_atomic(&source, &dest).await?;
         }
         Ok(())
     }
@@ -844,10 +913,7 @@ async fn file_matches(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
         Err(source) => return Err(io_error(path, source)),
     };
-    if let Some(expected) = sha1 {
-        if expected.is_empty() {
-            return Ok(true);
-        }
+    if let Some(expected) = sha1.filter(|hash| !hash.trim().is_empty()) {
         return verify_hash(path, expected, HashAlgo::Sha1)
             .await
             .map_err(MinecraftError::Download);
@@ -885,6 +951,7 @@ fn resolve_library(library: &Library) -> Result<Vec<ResolvedArtifact>, Minecraft
                 } else {
                     artifact.url.clone()
                 };
+                validate_artifact_url(&url)?;
                 resolved.push(ResolvedArtifact {
                     path,
                     url,
@@ -922,9 +989,11 @@ fn resolve_library(library: &Library) -> Result<Vec<ResolvedArtifact>, Minecraft
 
     if resolved.is_empty() {
         if let Some(path) = maven_path(&library.name) {
+            let url = format!("{base}{path}");
+            validate_artifact_url(&url)?;
             resolved.push(ResolvedArtifact {
                 path: path.clone(),
-                url: format!("{base}{path}"),
+                url,
                 sha1: library.sha1.clone(),
                 size: library.size,
                 classpath: true,
@@ -1358,6 +1427,26 @@ fn io_error(path: &Path, source: std::io::Error) -> MinecraftError {
     }
 }
 
+/// Copies or hard-links `source` into `dest` through a sibling temporary file,
+/// then renames it into place. A crash mid-copy therefore leaves a `.tmp`
+/// file, never a truncated jar that looks installed forever.
+async fn copy_atomic(source: &Path, dest: &Path) -> Result<(), MinecraftError> {
+    let parent = dest.parent().unwrap_or_else(|| Path::new("."));
+    let name = dest.file_name().unwrap_or_default().to_string_lossy();
+    let temp = parent.join(format!(".{name}.{}.tmp", std::process::id()));
+    let _ = tokio::fs::remove_file(&temp).await;
+    if tokio::fs::hard_link(source, &temp).await.is_err() {
+        tokio::fs::copy(source, &temp)
+            .await
+            .map_err(|source| io_error(&temp, source))?;
+    }
+    if let Err(source) = tokio::fs::rename(&temp, dest).await {
+        let _ = tokio::fs::remove_file(&temp).await;
+        return Err(io_error(dest, source));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Error)]
 pub enum MinecraftError {
     #[error("HTTP {status} для {url}")]
@@ -1390,6 +1479,8 @@ pub enum MinecraftError {
     InvalidAssetHash(String),
     #[error("небезопасный путь библиотеки: {0}")]
     UnsafeLibraryPath(String),
+    #[error("недопустимый URL артефакта {url}: {reason}")]
+    InvalidArtifactUrl { url: String, reason: String },
     #[error("ошибка нативной библиотеки: {0}")]
     Native(String),
 }

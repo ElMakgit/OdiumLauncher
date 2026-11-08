@@ -639,6 +639,106 @@ async fn load_state(path: &Path) -> SyncState {
     }
 }
 
+/// Outcome of [`reset_instance`].
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ResetReport {
+    /// Files that were removed.
+    pub removed: usize,
+    /// Files that could not be removed (usually locked by a running game).
+    pub failed: usize,
+}
+
+/// Deletes the files installed by a pack so the next sync downloads them again.
+///
+/// Only manifest-managed paths and paths recorded by the last sync are
+/// removed. Worlds (`saves`), screenshots, logs and `options.txt` are never
+/// touched: resetting a build must not cost the player their progress. The sync
+/// and override markers are removed as well, so the next run does not skip a
+/// single file.
+pub async fn reset_instance(
+    instance_dir: &Path,
+    manifest_files: &[String],
+) -> Result<ResetReport, ModpackError> {
+    let state_path = instance_dir.join(STATE_FILE);
+    let mut targets = BTreeSet::new();
+    for path in manifest_files {
+        targets.insert(normalize_path(path));
+    }
+    if let Ok(bytes) = tokio::fs::read(&state_path).await {
+        if let Ok(state) = serde_json::from_slice::<SyncState>(&bytes) {
+            // The state also lists files from the previous pack version, so a
+            // reset removes stale entries that the new manifest no longer has.
+            targets.extend(state.files.into_keys());
+        }
+    }
+
+    let mut report = ResetReport::default();
+    for relative in targets {
+        if !is_safe_relative(Path::new(&relative)) {
+            tracing::warn!(%relative, "skipping unsafe path while resetting an instance");
+            continue;
+        }
+        let path = instance_dir.join(path_buf(&relative));
+        match tokio::fs::remove_file(&path).await {
+            Ok(()) => report.removed += 1,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                report.failed += 1;
+                tracing::warn!(%error, path = %path.display(), "could not remove an instance file");
+            }
+        }
+    }
+
+    // Removing the markers makes the next sync treat every file as new and
+    // re-extract the overrides, which is what "download the pack again" means.
+    for name in [
+        STATE_FILE,
+        OVERRIDES_STATE_FILE,
+        pml_downloader::HASH_CACHE_FILE,
+    ] {
+        match tokio::fs::remove_file(instance_dir.join(name)).await {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => tracing::warn!(%error, name, "could not remove an instance marker"),
+        }
+    }
+
+    tracing::info!(
+        removed = report.removed,
+        failed = report.failed,
+        "instance build files reset"
+    );
+    Ok(report)
+}
+
+/// Removes the cached manifest and `.mrpack` copy for one source URL, forcing
+/// the next refresh to use the network instead of the last good response.
+pub fn clear_source_cache(cache_dir: &Path, url: &str) -> std::io::Result<()> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        // `builtin://` and `file://` sources have no network cache.
+        return Ok(());
+    }
+    let key = &hash_bytes(HashAlgo::Sha256, url.as_bytes())[..16];
+    let files = [
+        cache_dir.join("manifests").join(format!("{key}.json")),
+        cache_dir.join("manifests").join(format!("{key}.json.tmp")),
+        cache_dir.join("mrpack").join(format!("{key}.mrpack")),
+        cache_dir.join("mrpack").join(format!("{key}.mrpack.part")),
+        cache_dir
+            .join("mrpack")
+            .join(format!("{key}.mrpack.part.json")),
+        cache_dir.join("mrpack").join(format!("{key}.json")),
+    ];
+    for path in files {
+        match std::fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Ok(())
+}
+
 /// Files a pack update must never silently overwrite. Worlds and user configs
 /// are copied before the delta sync; the caller decides when a backup is due
 /// (normally only when the pack version changes).
@@ -855,6 +955,67 @@ mod tests {
             .expect("list")
             .count();
         assert_eq!(count, 2);
+    }
+
+    #[tokio::test]
+    async fn reset_removes_pack_files_but_keeps_worlds() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let instance = directory.path().join("instance");
+        std::fs::create_dir_all(instance.join("mods"))?;
+        std::fs::create_dir_all(instance.join("saves").join("world"))?;
+        std::fs::write(instance.join("mods/old.jar"), b"old")?;
+        std::fs::write(instance.join("mods/managed.jar"), b"managed")?;
+        std::fs::write(instance.join("saves/world/level.dat"), b"world")?;
+        std::fs::write(instance.join("options.txt"), b"fov:90")?;
+
+        let state = SyncState {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            pack_version: "1.0.0".to_owned(),
+            files: BTreeMap::from([("mods/old.jar".to_owned(), "a".repeat(64))]),
+        };
+        std::fs::write(instance.join(STATE_FILE), serde_json::to_vec(&state)?)?;
+        std::fs::write(instance.join(OVERRIDES_STATE_FILE), b"{}")?;
+        std::fs::write(instance.join(pml_downloader::HASH_CACHE_FILE), b"{}")?;
+
+        let report = reset_instance(&instance, &["mods/managed.jar".to_owned()]).await?;
+        assert_eq!(report.removed, 2);
+        assert_eq!(report.failed, 0);
+        assert!(!instance.join("mods/old.jar").exists());
+        assert!(!instance.join("mods/managed.jar").exists());
+        // A reset must never cost the player their world or settings.
+        assert!(instance.join("saves/world/level.dat").is_file());
+        assert!(instance.join("options.txt").is_file());
+        assert!(!instance.join(STATE_FILE).exists());
+        assert!(!instance.join(OVERRIDES_STATE_FILE).exists());
+        assert!(!instance.join(pml_downloader::HASH_CACHE_FILE).exists());
+        Ok(())
+    }
+
+    #[test]
+    fn clear_source_cache_removes_only_that_source() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let meta = directory.path();
+        let url = "https://example.com/pack.mrpack";
+        let other = "https://example.com/other.mrpack";
+        let key = &hash_bytes(HashAlgo::Sha256, url.as_bytes())[..16];
+        let other_key = &hash_bytes(HashAlgo::Sha256, other.as_bytes())[..16];
+        std::fs::create_dir_all(meta.join("manifests"))?;
+        std::fs::create_dir_all(meta.join("mrpack"))?;
+        std::fs::write(meta.join("manifests").join(format!("{key}.json")), b"{}")?;
+        std::fs::write(meta.join("mrpack").join(format!("{key}.mrpack")), b"zip")?;
+        std::fs::write(
+            meta.join("manifests").join(format!("{other_key}.json")),
+            b"{}",
+        )?;
+
+        clear_source_cache(meta, url)?;
+        assert!(!meta.join("manifests").join(format!("{key}.json")).exists());
+        assert!(!meta.join("mrpack").join(format!("{key}.mrpack")).exists());
+        assert!(meta
+            .join("manifests")
+            .join(format!("{other_key}.json"))
+            .is_file());
+        Ok(())
     }
 
     #[test]

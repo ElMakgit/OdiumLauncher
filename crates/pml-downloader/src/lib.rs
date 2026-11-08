@@ -79,8 +79,22 @@ impl Default for CancelToken {
 }
 
 const MAX_ATTEMPTS: usize = 3;
+/// An integrity failure means the whole body has to be fetched again. Retrying
+/// it as often as a transient network error would turn one bad CDN response
+/// into three full downloads, so the second attempt is the last one.
+const MAX_INTEGRITY_ATTEMPTS: usize = 2;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
 const COPY_BUFFER: usize = 64 * 1024;
+/// A stalled body must be detected without imposing a wall-clock deadline on
+/// the whole transfer: a 500 MiB jar on a slow line may legitimately take an
+/// hour, but it should never wait forever for the next chunk.
+const READ_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+/// Hard limits for a generic archive extraction. `overrides` has its own,
+/// pack-specific budget; these protect every other caller (natives, Java,
+/// runtime zips) from a decompression bomb.
+const MAX_ZIP_ENTRIES: usize = 100_000;
+const MAX_ZIP_ENTRY_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const MAX_ZIP_TOTAL_BYTES: u64 = 8 * 1024 * 1024 * 1024;
 /// Retry-After values above this are clamped: a CDN asking for an hour must not
 /// freeze the launcher, and the user can always press "Отмена".
 const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
@@ -163,7 +177,11 @@ impl DownloadTask {
         Self {
             url: url.into(),
             dest: dest.into(),
-            sha,
+            // An empty digest is not a digest. Keeping `Some("")` made the
+            // downloader compare every byte stream against "" and fail with a
+            // hash mismatch, while `file_matches` treated the same value as
+            // "already installed".
+            sha: sha.filter(|hash| !hash.trim().is_empty()),
             algo,
             size,
             label: label.into(),
@@ -534,7 +552,10 @@ impl Downloader {
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(Duration::from_secs(20))
-            .timeout(Duration::from_secs(30 * 60))
+            // `timeout` would cap the whole response body. `read_timeout` only
+            // aborts when no bytes arrive for a minute, so a slow but healthy
+            // download of a large jar is not killed mid-transfer.
+            .read_timeout(READ_IDLE_TIMEOUT)
             .redirect(reqwest::redirect::Policy::limited(10))
             .build()
             .map_err(DownloadError::Client)?;
@@ -838,7 +859,15 @@ impl Downloader {
                     return Ok(outcome);
                 }
                 Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
-                Err(error) if error.is_retryable() && attempt + 1 < MAX_ATTEMPTS => {
+                Err(error)
+                    if error.is_retryable()
+                        && attempt + 1
+                            < if error.is_integrity() {
+                                MAX_INTEGRITY_ATTEMPTS
+                            } else {
+                                MAX_ATTEMPTS
+                            } =>
+                {
                     let delay = error
                         .retry_after()
                         .map(|hint| hint.min(MAX_RETRY_AFTER))
@@ -854,7 +883,11 @@ impl Downloader {
                     last_error = Some(error);
                 }
                 Err(error) => {
-                    let _ = tokio::fs::remove_file(part_path(&task.dest)).await;
+                    // Keep the `.part`: a transient network failure is exactly
+                    // what Range resume is for. The next launch (or the next
+                    // attempt from another batch) continues from the verified
+                    // prefix instead of starting a multi-hundred-megabyte
+                    // download over.
                     send(
                         events,
                         DownloadEvent::FileFailed {
@@ -872,7 +905,6 @@ impl Downloader {
             path: task.dest.clone(),
             source: std::io::Error::other("download failed without a specific error"),
         });
-        let _ = tokio::fs::remove_file(part_path(&task.dest)).await;
         send(
             events,
             DownloadEvent::FileFailed {
@@ -1419,8 +1451,15 @@ pub fn safe_extract_zip_with_cancel(
         path: zip_path.to_path_buf(),
         source,
     })?;
+    if archive.len() > MAX_ZIP_ENTRIES {
+        return Err(DownloadError::ZipTooLarge {
+            path: zip_path.to_path_buf(),
+            detail: format!("{} записей (максимум {MAX_ZIP_ENTRIES})", archive.len()),
+        });
+    }
 
     let mut extracted = Vec::new();
+    let mut total_bytes: u64 = 0;
     for index in 0..archive.len() {
         if cancel.is_some_and(CancelToken::is_cancelled) {
             return Err(DownloadError::Cancelled);
@@ -1451,6 +1490,22 @@ pub fn safe_extract_zip_with_cancel(
             continue;
         }
 
+        // Check the declared size before creating a file, then enforce the
+        // same budget on the bytes actually produced. A zip bomb usually lies
+        // in one of the two places.
+        let declared = entry.size();
+        if declared > MAX_ZIP_ENTRY_BYTES
+            || total_bytes.saturating_add(declared) > MAX_ZIP_TOTAL_BYTES
+        {
+            return Err(DownloadError::ZipTooLarge {
+                path: zip_path.to_path_buf(),
+                detail: format!(
+                    "{} распаковывается до {declared} байт (лимит на запись {MAX_ZIP_ENTRY_BYTES}, суммарно {MAX_ZIP_TOTAL_BYTES})",
+                    entry.name()
+                ),
+            });
+        }
+
         let parent = out_path
             .parent()
             .ok_or_else(|| DownloadError::UnsafeZipPath(entry.name().to_owned()))?;
@@ -1464,7 +1519,25 @@ pub fn safe_extract_zip_with_cancel(
 
         let mut output =
             std::fs::File::create(&out_path).map_err(|source| io_error(&out_path, source))?;
-        std::io::copy(&mut entry, &mut output).map_err(|source| io_error(&out_path, source))?;
+        let entry_limit = MAX_ZIP_ENTRY_BYTES.min(MAX_ZIP_TOTAL_BYTES.saturating_sub(total_bytes));
+        let copied = match std::io::copy(
+            &mut std::io::Read::take(&mut entry, entry_limit.saturating_add(1)),
+            &mut output,
+        ) {
+            Ok(copied) => copied,
+            Err(source) => {
+                let _ = std::fs::remove_file(&out_path);
+                return Err(io_error(&out_path, source));
+            }
+        };
+        if copied > entry_limit {
+            let _ = std::fs::remove_file(&out_path);
+            return Err(DownloadError::ZipTooLarge {
+                path: zip_path.to_path_buf(),
+                detail: format!("{} превышает лимит распаковки", entry.name()),
+            });
+        }
+        total_bytes = total_bytes.saturating_add(copied);
         extracted.push(relative);
     }
     Ok(extracted)
@@ -1483,6 +1556,9 @@ pub fn is_safe_relative(path: &Path) -> bool {
 pub fn find_file(root: &Path, file_name: &str) -> Option<PathBuf> {
     for entry in walkdir::WalkDir::new(root)
         .follow_links(false)
+        // A corrupted or hostile tree can contain deep junctions/loops; an
+        // unbounded walk used to be able to run for minutes on a frame.
+        .max_depth(8)
         .into_iter()
         .filter_map(Result::ok)
     {
@@ -1559,6 +1635,8 @@ pub enum DownloadError {
     },
     #[error("небезопасный путь в zip: {0}")]
     UnsafeZipPath(String),
+    #[error("zip {path} превышает безопасные лимиты распаковки: {detail}")]
+    ZipTooLarge { path: PathBuf, detail: String },
     #[error("в zip обнаружена символическая ссылка: {0}")]
     ZipSymlink(String),
     #[error("ошибка zip {path}: {source}")]
@@ -1599,6 +1677,12 @@ impl DownloadError {
             ),
             _ => false,
         }
+    }
+
+    /// The body was fully received but did not match the manifest, so a retry
+    /// must start from byte zero.
+    fn is_integrity(&self) -> bool {
+        matches!(self, Self::HashMismatch { .. } | Self::SizeMismatch { .. })
     }
 }
 
