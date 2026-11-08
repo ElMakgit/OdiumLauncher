@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   check:
     runs-on: windows-latest
@@ -36,3 +39,62 @@ jobs:
             libx11-dev libxcursor-dev libxrandr-dev libxi-dev
       - name: Check
         run: cargo check --workspace --all-targets
+
+  build-windows:
+    needs: [check, check-linux]
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release executable
+        run: cargo build --release
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: OdiumLauncher-windows-x64
+          path: target/release/OdiumLauncher.exe
+          if-no-files-found: error
+
+  build-macos:
+    needs: [check, check-linux]
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Build and package the macOS app
+        run: bash tools/package-macos.sh
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: OdiumLauncher-macos-universal
+          path: dist/OdiumLauncher-macos-universal.dmg
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download the Windows executable
+        uses: actions/download-artifact@v4
+        with:
+          name: OdiumLauncher-windows-x64
+          path: release
+      - name: Download the macOS DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: OdiumLauncher-macos-universal
+          path: release
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/OdiumLauncher.exe
+            release/OdiumLauncher-macos-universal.dmg
+          generate_release_notes: true

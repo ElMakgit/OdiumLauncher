@@ -620,6 +620,8 @@ fn install_system_fonts(ctx: &egui::Context, theme: Theme) {
     // Windows 98 keeps Microsoft Sans Serif for its bitmap-font silhouette.
     // Modern themes use Segoe UI; Windows 11 prefers Segoe UI Variable when the
     // font is present, falling back to the classic Segoe UI otherwise.
+    // Other platforms use their native UI font when one can be loaded.
+    #[cfg(windows)]
     let ui_path = match theme {
         Theme::Win98 => "C:\\Windows\\Fonts\\micross.ttf",
         Theme::Win11 if Path::new("C:\\Windows\\Fonts\\SegUIVar.ttf").exists() => {
@@ -627,6 +629,10 @@ fn install_system_fonts(ctx: &egui::Context, theme: Theme) {
         }
         _ => "C:\\Windows\\Fonts\\segoeui.ttf",
     };
+    #[cfg(target_os = "macos")]
+    let ui_path = "/System/Library/Fonts/Supplemental/Arial.ttf";
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    let ui_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
     let ui_name = match theme {
         Theme::Win98 => "win98-ui",
         _ => "theme-ui",
@@ -642,7 +648,13 @@ fn install_system_fonts(ctx: &egui::Context, theme: Theme) {
             .insert(0, ui_name.to_owned());
     }
 
-    if let Some(bytes) = read_font("C:\\Windows\\Fonts\\consola.ttf") {
+    #[cfg(windows)]
+    let mono_path = "C:\\Windows\\Fonts\\consola.ttf";
+    #[cfg(target_os = "macos")]
+    let mono_path = "/System/Library/Fonts/Supplemental/Courier New.ttf";
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    let mono_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf";
+    if let Some(bytes) = read_font(mono_path) {
         fonts
             .font_data
             .insert("theme-mono".to_owned(), FontData::from_owned(bytes));

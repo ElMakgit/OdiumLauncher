@@ -119,17 +119,23 @@ impl Backdrop {
     /// Grabs the screen right now and starts blurring it in the background.
     /// Call this before creating the launcher window.
     pub fn capture_now() -> Self {
-        let mut backdrop = Self {
-            rx: None,
-            texture: None,
-            origin_x: 0,
-            origin_y: 0,
-            width: 0,
-            height: 0,
-        };
-
+        #[cfg(not(windows))]
+        {
+            // Other platforms never capture the desktop: the glass falls back
+            // to transparent surfaces without a blurred backdrop.
+            Self::empty()
+        }
         #[cfg(windows)]
         {
+            let mut backdrop = Self {
+                rx: None,
+                texture: None,
+                origin_x: 0,
+                origin_y: 0,
+                width: 0,
+                height: 0,
+            };
+
             if let Some(snapshot) = capture_screen() {
                 let (tx, rx) = mpsc::channel();
                 std::thread::spawn(move || {
@@ -144,9 +150,9 @@ impl Backdrop {
             } else {
                 tracing::warn!("desktop capture failed; glass falls back to DWM acrylic");
             }
-        }
 
-        backdrop
+            backdrop
+        }
     }
 
     /// Recaptures the desktop after a live switch to the glass theme. The
@@ -186,6 +192,8 @@ impl Backdrop {
             self.rx = Some(rx);
             return;
         }
+        #[cfg(not(windows))]
+        let _ = hwnd;
         *self = Self::capture_now();
     }
 

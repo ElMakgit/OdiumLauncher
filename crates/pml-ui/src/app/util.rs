@@ -37,23 +37,7 @@ pub(crate) fn sunken_well<R>(
 }
 
 pub(crate) fn total_system_ram_mb() -> u32 {
-    #[cfg(windows)]
-    {
-        use std::mem::MaybeUninit;
-        use windows_sys::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
-        // SAFETY: MEMORYSTATUSEX is a plain C struct. We zero it, set dwLength
-        // as required by the API and only read fields after a non-zero result.
-        unsafe {
-            let mut status = MaybeUninit::<MEMORYSTATUSEX>::zeroed();
-            let pointer = status.as_mut_ptr();
-            (*pointer).dwLength = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
-            if GlobalMemoryStatusEx(pointer) != 0 {
-                return ((*pointer).ullTotalPhys / (1024 * 1024)) as u32;
-            }
-        }
-    }
-    // Conservative fallback for non-Windows builds and failed API calls.
-    8192
+    pml_config::total_system_ram_mb()
 }
 
 pub(crate) fn format_bytes(bytes: u64) -> String {
@@ -142,7 +126,9 @@ pub(crate) fn default_dist_dir(path: &Path) -> PathBuf {
 pub(crate) fn open_path(path: &Path) {
     #[cfg(windows)]
     let command = std::process::Command::new("explorer").arg(path).spawn();
-    #[cfg(not(windows))]
+    #[cfg(target_os = "macos")]
+    let command = std::process::Command::new("open").arg(path).spawn();
+    #[cfg(all(not(windows), not(target_os = "macos")))]
     let command = std::process::Command::new("xdg-open").arg(path).spawn();
     if let Err(error) = command {
         tracing::warn!(%error, path = %path.display(), "could not open folder");

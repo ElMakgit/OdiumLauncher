@@ -1,9 +1,12 @@
 # Odium Launcher (PortableMC)
 
-Портативный лаунчер Minecraft Java для Windows. Один `.exe` и папка
-`launcher_data` рядом с ним — без установки, реестра и прав администратора.
-Лаунчер сам находит или скачивает Java 21 (Temurin), ставит Fabric/Quilt или
-Forge/NeoForge, синхронизирует модпак, добавляет сервер в список и запускает игру.
+Портативный лаунчер Minecraft Java для Windows. По умолчанию данные хранятся в
+`%LOCALAPPDATA%\OdiumLauncher`, а `portable.flag` рядом с `.exe` (или запуск с
+съёмного диска) переносит их в папку `launcher_data` рядом с лаунчером — без
+установки, реестра и прав администратора. Лаунчер сам находит или скачивает
+подходящую Java (8/17/21 в зависимости от версии Minecraft), ставит
+Fabric/Quilt или Forge/NeoForge, синхронизирует модпак, добавляет сервер в
+список и запускает игру.
 
 ## Возможности
 
@@ -17,6 +20,9 @@ Forge/NeoForge, синхронизирует модпак, добавляет с
 - Загрузчики: Fabric, Quilt (profile JSON), Forge, NeoForge (headless installer).
 - Сборки: дельта-синк, optional files, overrides, автоматическое удаление
   устаревших файлов.
+- Сброс сборки: кнопка «Удалить файлы сборки» удаляет моды, конфиги и кэш
+  манифеста, но сохраняет миры, скриншоты и логи; следующий запуск скачивает
+  пак заново.
 - Пять тем: Windows 98 / 7 / 8.1 / 10 / 11; для Win7 — Aero-стекло.
 - Публикация: GitHub Releases для `.mrpack`, Git Data API для manifest-паков,
   сборка готового `dist/` + ZIP.
@@ -32,6 +38,25 @@ cargo build --release
 # target/release/OdiumLauncher.exe
 ```
 
+### macOS
+
+Сборка выполняется на macOS (Intel или Apple Silicon) с установленными
+Rust и Xcode Command Line Tools. Скрипт собирает универсальный бинарник,
+упаковывает `.app`, подписывает его ad-hoc и создаёт DMG:
+
+```bash
+./tools/package-macos.sh
+# dist/OdiumLauncher-macos-universal.dmg
+```
+
+Без сертификата Apple Developer приложение не нотаризовано: при первом
+запуске на другом Mac его нужно открыть через правый клик → «Открыть»
+(либо снять карантин: `xattr -dr com.apple.quarantine "/Applications/Odium Launcher.app"`).
+Данные на macOS хранятся в `~/Library/Application Support/OdiumLauncher`.
+
+Тег `v*` запускает GitHub Actions, который собирает Windows `.exe` и
+macOS `.dmg` и прикладывает файлы к релизу.
+
 Проверки, которые выполняет CI:
 
 ```powershell
@@ -41,24 +66,37 @@ cargo test --workspace
 powershell -ExecutionPolicy Bypass -File tools/Check-RepoHygiene.ps1
 ```
 
-## Запуск и структура `launcher_data`
+## Запуск и хранение данных
 
-Запустите `OdiumLauncher.exe`. Рядом появится:
+По умолчанию лаунчер пишет изменяемые файлы в
+`%LOCALAPPDATA%\OdiumLauncher` (на других ОС — XDG data dir). Это позволяет
+держать `.exe` на рабочем столе и не засорять папку Downloads.
+
+Портативный режим включается одним из способов:
+
+- положить пустой файл `portable.flag` рядом с `OdiumLauncher.exe`;
+- задать переменную окружения `ODIUM_PORTABLE=1`;
+- запустить лаунчер с USB-накопителя или SD-карты (определяется автоматически).
+
+В этом режиме рядом с `.exe` создаётся:
 
 ```text
 OdiumLauncher.exe
+portable.flag
 launcher_data/
   config.json                 настройки игрока и источники
-  logs/                       launcher.log-* и game-*.log
+  logs/                       launcher.log-* и game-*.log (хранятся 14 дней)
   meta/                       кэш манифестов и .mrpack
-  java/                       скачанные JRE
+  java/                       скачанные JRE (Temurin 8/17/21)
   libraries/                  библиотеки Minecraft и загрузчиков
   assets/                     ресурсы и natives
   versions/                   version JSON и client.jar
   instances/<source_id>/      файлы конкретной сборки
 ```
 
-Перенос на другой компьютер — скопировать `.exe` и `launcher_data` целиком.
+Перенос на другой компьютер — скопировать `.exe`, `portable.flag` и
+`launcher_data` целиком. Папка `dist/`, которую собирает «Издатель», уже
+содержит `portable.flag`, поэтому у игрока данные останутся внутри сборки.
 `config.json` пишется атомарно; повреждённый файл сохраняется как
 `config.json.broken.<timestamp>`.
 
@@ -109,7 +147,11 @@ launcher_data/
 
 - Все файлы с манифестом проверяются по хэшу; `.part` не считается готовым
   файлом.
-- ZIP/mrpack распаковываются с проверкой относительных путей и лимитов.
+- ZIP/mrpack распаковываются с проверкой относительных путей, защитой от
+  symlink и лимитами на число записей и суммарный объём.
+- Артефакты Minecraft (client jar, libraries, natives, asset index) принимаются
+  только по HTTPS с хостов Mojang, Fabric, Quilt, Forge и NeoForge. Сторонний
+  loader-профиль не может подсунуть `file://` или свой хост в classpath.
 - Источник по `http://` помечается в UI предупреждением: издателю стоит включить
   HTTPS.
 - GitHub-токен вводится в память UI и не сохраняется на диск. В legacy-скрипте
