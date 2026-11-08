@@ -81,6 +81,9 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Checkout first: it cleans the workspace, which would delete artifacts
+      # that were downloaded before it.
+      - uses: actions/checkout@v4
       - name: Download the Windows executable
         uses: actions/download-artifact@v4
         with:
@@ -91,8 +94,6 @@ jobs:
         with:
           name: OdiumLauncher-macos-universal
           path: release
-      - name: Check out the license files
-        uses: actions/checkout@v4
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
