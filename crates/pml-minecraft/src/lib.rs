@@ -1082,28 +1082,48 @@ pub fn rules_allow(rules: &[Rule]) -> bool {
     allowed
 }
 
+fn current_os_name() -> &'static str {
+    if cfg!(target_os = "windows") {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "osx"
+    } else {
+        "linux"
+    }
+}
+
 fn rule_matches(rule: &Rule) -> bool {
     if let Some(os) = &rule.os {
         if let Some(name) = &os.name {
-            if !name.eq_ignore_ascii_case("windows") {
+            let current = current_os_name();
+            // Mojang uses both `osx` and `macos`; old manifests sometimes say
+            // `win` instead of `windows`.
+            let matches = name.eq_ignore_ascii_case(current)
+                || (current == "osx" && name.eq_ignore_ascii_case("macos"))
+                || (current == "windows" && name.eq_ignore_ascii_case("win"));
+            if !matches {
                 return false;
             }
         }
         if let Some(arch) = &os.arch {
             let current = std::env::consts::ARCH;
-            let matches = match arch.as_str() {
-                "x86" => current == "x86",
-                "x86_64" => current == "x86_64",
-                "arm64" => current == "aarch64",
-                other => other == current,
+            let arch_lower = arch.to_ascii_lowercase();
+            // Manifest aliases: `amd64` == `x86_64`, `arm64` == `aarch64`,
+            // and every 32-bit x86 spelling collapses to `x86`.
+            let normalized = match arch_lower.as_str() {
+                "x86_64" | "amd64" => "x86_64",
+                "arm64" | "aarch64" => "aarch64",
+                "x86" | "i386" | "i486" | "i586" | "i686" => "x86",
+                other => other,
             };
-            if !matches {
+            if normalized != current {
                 return false;
             }
         }
         if os.version.is_some() {
-            // Windows version regexes are only used by ancient versions. Treat
-            // them as matching; 1.21.1 has no version-specific rules.
+            // Version regexes appear only in pre-1.6 manifests; the launcher
+            // targets 1.21.1, where no rule carries one. Treating them as a
+            // match is safer than evaluating a regex against a fake version.
         }
     }
     if let Some(features) = &rule.features {

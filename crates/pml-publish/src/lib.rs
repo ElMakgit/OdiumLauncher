@@ -1043,9 +1043,20 @@ pub fn build_dist(request: &DistRequest) -> Result<DistResult, PublishError> {
         request.source_name, request.pack_label
     );
     std::fs::write(staging.join("README.txt"), readme)?;
+    write_checksums(&staging)?;
 
     let zip_path = parent.join(format!("OdiumLauncher-{}.zip", request.source_id));
     write_zip(&staging, &zip_path)?;
+    // A second copy of the digest next to the archive lets a user verify the
+    // download before extracting it, without trusting the archive contents.
+    let zip_hash = pml_downloader::hash_file_blocking(&zip_path, pml_downloader::HashAlgo::Sha256)?;
+    std::fs::write(
+        zip_path.with_extension("zip.sha256"),
+        format!(
+            "{zip_hash}  {}\n",
+            zip_path.file_name().unwrap_or_default().to_string_lossy()
+        ),
+    )?;
 
     if dir.exists() {
         std::fs::remove_dir_all(&dir)?;
@@ -1057,6 +1068,42 @@ pub fn build_dist(request: &DistRequest) -> Result<DistResult, PublishError> {
         zip: zip_path,
         exe_copied,
     })
+}
+
+fn write_checksums(root: &Path) -> Result<(), PublishError> {
+    use pml_downloader::{hash_file_blocking, HashAlgo};
+
+    let mut entries = Vec::new();
+    for entry in walkdir::WalkDir::new(root).follow_links(false) {
+        let entry = entry.map_err(|error| PublishError::Io(error.into()))?;
+        if !entry.file_type().is_file() {
+            continue;
+        }
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .eq_ignore_ascii_case("SHA256SUMS.txt")
+        {
+            continue;
+        }
+        let relative = entry
+            .path()
+            .strip_prefix(root)
+            .unwrap_or_else(|_| entry.path())
+            .to_string_lossy()
+            .replace('\\', "/");
+        let hash = hash_file_blocking(entry.path(), HashAlgo::Sha256)?;
+        entries.push((relative, hash));
+    }
+    // Sort by path, matching the conventional `sha256sum -c` friendly layout.
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let body = entries
+        .into_iter()
+        .map(|(path, hash)| format!("{hash}  {path}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    std::fs::write(root.join("SHA256SUMS.txt"), body + "\n")?;
+    Ok(())
 }
 
 fn write_zip(dir: &Path, zip_path: &Path) -> Result<(), PublishError> {
@@ -1235,5 +1282,12 @@ mod tests {
             "files from the previous build must not leak into the new dist"
         );
         assert!(result.zip.is_file());
+        let sums = std::fs::read_to_string(output.join("SHA256SUMS.txt")).expect("checksums");
+        assert!(sums.contains("OdiumLauncher.exe"));
+        assert!(sums.contains("README.txt"));
+        assert!(temp
+            .path()
+            .join("OdiumLauncher-test-pack.zip.sha256")
+            .is_file());
     }
 }

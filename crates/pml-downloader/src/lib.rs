@@ -12,7 +12,7 @@
 
 use std::collections::{BTreeMap, HashSet};
 use std::path::{Component, Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use sha2::Digest;
 use thiserror::Error;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{mpsc, Semaphore};
+use tokio::sync::{mpsc, watch, Mutex as AsyncMutex, Semaphore};
 use tokio::task::JoinSet;
 
 pub const USER_AGENT: &str = concat!(
@@ -30,9 +30,60 @@ pub const USER_AGENT: &str = concat!(
     " (+https://github.com/odium-launcher/odium-launcher)"
 );
 
+/// Cooperative cancellation shared by the UI and every long-running stage.
+///
+/// `watch` is used instead of an `AtomicBool` polled every 100 ms: waiters are
+/// woken immediately and there is no race between "check the flag" and
+/// "subscribe to the notification".
+#[derive(Debug, Clone)]
+pub struct CancelToken {
+    sender: Arc<watch::Sender<bool>>,
+}
+
+impl CancelToken {
+    pub fn new() -> Self {
+        let (sender, _receiver) = watch::channel(false);
+        Self {
+            sender: Arc::new(sender),
+        }
+    }
+
+    /// Marks the operation as cancelled and wakes every waiter.
+    pub fn cancel(&self) {
+        // `send_replace` also updates the stored value when no receiver is
+        // currently subscribed, unlike `send`, which fails on a closed channel.
+        self.sender.send_replace(true);
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        *self.sender.borrow()
+    }
+
+    /// Resolves as soon as the token is cancelled. Returns immediately when the
+    /// token was already cancelled before the call.
+    pub async fn cancelled(&self) {
+        let mut receiver = self.sender.subscribe();
+        if *receiver.borrow() {
+            return;
+        }
+        // `changed()` returns an error when the sender is dropped, which can
+        // only happen after every clone is gone; treat that as cancellation.
+        let _ = receiver.changed().await;
+    }
+}
+
+impl Default for CancelToken {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 const MAX_ATTEMPTS: usize = 3;
 const PROGRESS_INTERVAL: Duration = Duration::from_millis(120);
 const COPY_BUFFER: usize = 64 * 1024;
+/// Retry-After values above this are clamped: a CDN asking for an hour must not
+/// freeze the launcher, and the user can always press "Отмена".
+const MAX_RETRY_AFTER: Duration = Duration::from_secs(60);
 /// Sidecar cache with size+mtime fingerprints, so an unchanged file is not
 /// re-read and re-hashed on every launch.
 pub const HASH_CACHE_FILE: &str = ".pml_hash_cache.json";
@@ -171,11 +222,28 @@ struct HashCacheEntry {
     hash: String,
 }
 
+/// Validators stored next to a `.part` file. `If-Range` makes a resumed
+/// download safe: when the remote object changed, the server answers `200`
+/// with the full body instead of appending unrelated bytes.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct PartMeta {
+    #[serde(default)]
+    etag: Option<String>,
+    #[serde(default)]
+    last_modified: Option<String>,
+}
+
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct HashCacheData {
     #[serde(default)]
     entries: BTreeMap<String, HashCacheEntry>,
 }
+
+/// Serialises the read-merge-write cycle of the persisted hash cache. Two
+/// batches (for example assets and libraries) can finish at the same time; each
+/// one only owns its own entries, so a blind overwrite used to drop the other
+/// batch's records.
+static HASH_CACHE_WRITE_LOCK: AsyncMutex<()> = AsyncMutex::const_new(());
 
 /// Shared, persisted size+mtime -> hash map for one download batch.
 struct HashCache {
@@ -254,13 +322,21 @@ impl HashCache {
     }
 
     async fn persist(&self) {
-        let data = HashCacheData {
-            entries: self
-                .entries
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .clone(),
+        let ours = self
+            .entries
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let _guard = HASH_CACHE_WRITE_LOCK.lock().await;
+        // Merge with whatever another batch persisted while we were running.
+        let mut entries = match tokio::fs::read(&self.path).await {
+            Ok(bytes) => serde_json::from_slice::<HashCacheData>(&bytes)
+                .map(|data| data.entries)
+                .unwrap_or_default(),
+            Err(_) => BTreeMap::new(),
         };
+        entries.extend(ours);
+        let data = HashCacheData { entries };
         let Ok(json) = serde_json::to_vec(&data) else {
             return;
         };
@@ -369,6 +445,57 @@ fn retry_delay(attempt: usize) -> Duration {
     Duration::from_millis(base - spread + jitter)
 }
 
+/// Reads `Retry-After` in its numeric-seconds form. HTTP-date values are rare
+/// for download CDNs and are ignored, falling back to the exponential delay.
+fn retry_after_header(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+    let raw = headers
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim();
+    raw.parse::<u64>().ok().map(Duration::from_secs)
+}
+
+/// Free bytes available to the current user on the volume that holds `path`.
+/// The path itself may not exist yet (the first launch creates it), so the
+/// closest existing ancestor is probed instead.
+#[cfg(windows)]
+fn free_space(path: &Path) -> Option<u64> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+
+    let mut probe = path.to_path_buf();
+    while !probe.exists() {
+        if !probe.pop() {
+            return None;
+        }
+    }
+    let wide = probe
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<u16>>();
+    let mut free = 0u64;
+    // SAFETY: `wide` is a NUL-terminated UTF-16 path and the remaining pointers
+    // are valid, aligned `u64` out-parameters (the last two may be null).
+    let ok = unsafe {
+        GetDiskFreeSpaceExW(
+            wide.as_ptr(),
+            &mut free,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    (ok != 0).then_some(free)
+}
+
+#[cfg(not(windows))]
+fn free_space(_path: &Path) -> Option<u64> {
+    // The launcher is Windows-first; other platforms skip the pre-flight check
+    // and rely on the filesystem error if the disk fills up.
+    None
+}
+
 /// Per-batch values every download task needs for progress reporting. Kept in
 /// one `Clone`-able struct so the worker signature stays readable.
 #[derive(Clone)]
@@ -378,7 +505,7 @@ struct DownloadContext {
     overall_done: Arc<AtomicU64>,
     overall_total: u64,
     cache: Option<Arc<HashCache>>,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<CancelToken>,
 }
 
 impl DownloadContext {
@@ -386,9 +513,7 @@ impl DownloadContext {
     /// a cancelled batch stops within one network chunk instead of waiting for
     /// the whole file set to finish.
     fn is_cancelled(&self) -> bool {
-        self.cancel
-            .as_ref()
-            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+        self.cancel.as_ref().is_some_and(CancelToken::is_cancelled)
     }
 }
 
@@ -401,7 +526,7 @@ pub struct Downloader {
 struct DownloaderInner {
     client: reqwest::Client,
     concurrency: usize,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<CancelToken>,
 }
 
 impl Downloader {
@@ -431,7 +556,7 @@ impl Downloader {
     /// Returns a clone that cooperatively cancels every batch started through
     /// it. Domain crates keep their `Downloader` parameter unchanged: the UI
     /// passes the cancellable clone down the pipeline once.
-    pub fn with_cancel(&self, cancel: Arc<AtomicBool>) -> Self {
+    pub fn with_cancel(&self, cancel: CancelToken) -> Self {
         Self {
             inner: Arc::new(DownloaderInner {
                 client: self.inner.client.clone(),
@@ -457,7 +582,7 @@ impl Downloader {
             .inner
             .cancel
             .as_ref()
-            .is_some_and(|cancel| cancel.load(Ordering::Relaxed))
+            .is_some_and(CancelToken::is_cancelled)
         {
             return Err(DownloadError::Cancelled);
         }
@@ -496,6 +621,40 @@ impl Downloader {
         let tasks = unique;
         let total_files = tasks.len();
         let overall_total = tasks.iter().filter_map(|task| task.size).sum::<u64>();
+
+        // Pre-flight disk check. Only files that are not already the expected
+        // size count, so a fully installed instance is never rejected because
+        // of its total footprint.
+        let mut missing_bytes = 0u64;
+        for task in &tasks {
+            let Some(size) = task.size.filter(|size| *size > 0) else {
+                continue;
+            };
+            let existing = tokio::fs::metadata(&task.dest)
+                .await
+                .map(|metadata| metadata.len())
+                .unwrap_or(0);
+            if existing != size {
+                missing_bytes = missing_bytes.saturating_add(size);
+            }
+        }
+        if missing_bytes > 0 {
+            if let Some(root) = common_root(&tasks) {
+                if let Some(free) = free_space(&root) {
+                    let needed = missing_bytes
+                        .saturating_add(missing_bytes / 10)
+                        .saturating_add(64 * 1024 * 1024);
+                    if free < needed {
+                        return Err(DownloadError::NotEnoughSpace {
+                            path: root,
+                            needed,
+                            free,
+                        });
+                    }
+                }
+            }
+        }
+
         let overall_done = Arc::new(AtomicU64::new(0));
         let semaphore = Arc::new(Semaphore::new(self.inner.concurrency));
         let mut set: JoinSet<Result<(usize, FileOutcome), DownloadError>> = JoinSet::new();
@@ -653,7 +812,7 @@ impl Downloader {
                     events,
                     &context.overall_done,
                     context.overall_total,
-                    context.cancel.as_deref(),
+                    context.cancel.as_ref(),
                 )
                 .await
             {
@@ -680,7 +839,10 @@ impl Downloader {
                 }
                 Err(DownloadError::Cancelled) => return Err(DownloadError::Cancelled),
                 Err(error) if error.is_retryable() && attempt + 1 < MAX_ATTEMPTS => {
-                    let delay = retry_delay(attempt);
+                    let delay = error
+                        .retry_after()
+                        .map(|hint| hint.min(MAX_RETRY_AFTER))
+                        .unwrap_or_else(|| retry_delay(attempt));
                     tracing::warn!(
                         url = %task.url,
                         attempt = attempt + 1,
@@ -729,9 +891,9 @@ impl Downloader {
         events: Option<&mpsc::UnboundedSender<DownloadEvent>>,
         overall_done: &AtomicU64,
         overall_total: u64,
-        cancel: Option<&AtomicBool>,
+        cancel: Option<&CancelToken>,
     ) -> Result<FileOutcome, DownloadError> {
-        if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+        if cancel.is_some_and(CancelToken::is_cancelled) {
             return Err(DownloadError::Cancelled);
         }
         let parsed = reqwest::Url::parse(&task.url)
@@ -764,6 +926,7 @@ impl Downloader {
         }
 
         let part = part_path(&task.dest);
+        let meta_path = part_meta_path(&part);
         let mut resume_from = tokio::fs::metadata(&part)
             .await
             .map(|metadata| metadata.len())
@@ -775,11 +938,25 @@ impl Downloader {
             // The leftover `.part` is larger than the file described by the
             // manifest; it cannot be resumed safely.
             let _ = tokio::fs::remove_file(&part).await;
+            let _ = tokio::fs::remove_file(&meta_path).await;
             resume_from = 0;
         }
+        let part_meta: Option<PartMeta> = if resume_from > 0 {
+            match tokio::fs::read(&meta_path).await {
+                Ok(bytes) => serde_json::from_slice(&bytes).ok(),
+                Err(_) => None,
+            }
+        } else {
+            None
+        };
         let mut request = self.inner.client.get(&task.url);
         if resume_from > 0 {
             request = request.header(reqwest::header::RANGE, format!("bytes={resume_from}-"));
+            if let Some(meta) = &part_meta {
+                if let Some(validator) = meta.etag.as_ref().or(meta.last_modified.as_ref()) {
+                    request = request.header(reqwest::header::IF_RANGE, validator);
+                }
+            }
         }
         let mut response = request
             .send()
@@ -792,6 +969,7 @@ impl Downloader {
         if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
             // A stale part at or past EOF: start the file over.
             let _ = tokio::fs::remove_file(&part).await;
+            let _ = tokio::fs::remove_file(&meta_path).await;
             resume_from = 0;
             response = self
                 .inner
@@ -809,11 +987,22 @@ impl Downloader {
             return Err(DownloadError::HttpStatus {
                 status: status.as_u16(),
                 url: task.url.clone(),
+                retry_after: retry_after_header(response.headers()),
             });
         }
         if resume_from > 0 && status != reqwest::StatusCode::PARTIAL_CONTENT {
-            // The server ignored `Range` and sent the whole body from byte 0.
+            // The server ignored `Range` (or `If-Range` proved the object
+            // changed) and sent the whole body from byte 0.
             resume_from = 0;
+        }
+        // Remember the validators before the body is consumed so the next run
+        // can resume against the same object version.
+        let validators = PartMeta {
+            etag: header_value(&response, reqwest::header::ETAG),
+            last_modified: header_value(&response, reqwest::header::LAST_MODIFIED),
+        };
+        if let Ok(json) = serde_json::to_vec(&validators) {
+            let _ = tokio::fs::write(&meta_path, json).await;
         }
 
         let remaining = response.content_length();
@@ -857,6 +1046,7 @@ impl Downloader {
             }
             if fed != resume_from {
                 let _ = tokio::fs::remove_file(&part).await;
+                let _ = tokio::fs::remove_file(&meta_path).await;
                 return Err(DownloadError::ResumeMismatch { path: part.clone() });
             }
         }
@@ -872,7 +1062,7 @@ impl Downloader {
         let mut last_emit = Instant::now() - PROGRESS_INTERVAL;
 
         while let Some(chunk) = stream.next().await {
-            if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+            if cancel.is_some_and(CancelToken::is_cancelled) {
                 // Flush what has arrived and keep the `.part`: every byte in
                 // it was hashed and is safe to resume with a Range request.
                 writer
@@ -928,6 +1118,7 @@ impl Downloader {
             let actual = hasher.finalize_hex();
             if !actual.eq_ignore_ascii_case(expected) {
                 let _ = tokio::fs::remove_file(&part).await;
+                let _ = tokio::fs::remove_file(&meta_path).await;
                 return Err(DownloadError::HashMismatch {
                     path: task.dest.clone(),
                     expected: expected.to_owned(),
@@ -939,6 +1130,7 @@ impl Downloader {
         if let Some(expected) = task.size {
             if expected > 0 && downloaded != expected {
                 let _ = tokio::fs::remove_file(&part).await;
+                let _ = tokio::fs::remove_file(&meta_path).await;
                 return Err(DownloadError::SizeMismatch {
                     path: task.dest.clone(),
                     expected,
@@ -959,6 +1151,7 @@ impl Downloader {
                     path = %task.dest.display(),
                     "destination was completed by a concurrent download"
                 );
+                let _ = tokio::fs::remove_file(&meta_path).await;
                 return Ok(FileOutcome {
                     skipped: false,
                     bytes: downloaded,
@@ -971,14 +1164,16 @@ impl Downloader {
                 tokio::time::sleep(Duration::from_millis(50 * (attempt + 1))).await;
                 match tokio::fs::rename(&part, &task.dest).await {
                     Ok(()) => {
+                        let _ = tokio::fs::remove_file(&meta_path).await;
                         return Ok(FileOutcome {
                             skipped: false,
                             bytes: downloaded,
-                        })
+                        });
                     }
                     Err(error) => source = error,
                 }
                 if destination_matches(task).await {
+                    let _ = tokio::fs::remove_file(&meta_path).await;
                     return Ok(FileOutcome {
                         skipped: false,
                         bytes: downloaded,
@@ -988,6 +1183,7 @@ impl Downloader {
             return Err(io_error(&task.dest, source));
         }
 
+        let _ = tokio::fs::remove_file(&meta_path).await;
         Ok(FileOutcome {
             skipped: false,
             bytes: downloaded,
@@ -1006,9 +1202,9 @@ impl Downloader {
         overall_done: &AtomicU64,
         overall_total: u64,
         source: &Path,
-        cancel: Option<&AtomicBool>,
+        cancel: Option<&CancelToken>,
     ) -> Result<FileOutcome, DownloadError> {
-        if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+        if cancel.is_some_and(CancelToken::is_cancelled) {
             return Err(DownloadError::Cancelled);
         }
         let metadata = tokio::fs::metadata(source)
@@ -1058,7 +1254,7 @@ impl Downloader {
                 });
             }
         }
-        if cancel.is_some_and(|cancel| cancel.load(Ordering::Relaxed)) {
+        if cancel.is_some_and(CancelToken::is_cancelled) {
             return Err(DownloadError::Cancelled);
         }
         if let Err(source) = tokio::fs::rename(&part, &task.dest).await {
@@ -1097,6 +1293,21 @@ pub fn part_path(dest: &Path) -> PathBuf {
     let mut name = dest.file_name().unwrap_or_default().to_os_string();
     name.push(".part");
     dest.with_file_name(name)
+}
+
+/// Sidecar that stores the HTTP validators for a resumable `.part` file.
+fn part_meta_path(part: &Path) -> PathBuf {
+    let mut name = part.file_name().unwrap_or_default().to_os_string();
+    name.push(".json");
+    part.with_file_name(name)
+}
+
+fn header_value(response: &reqwest::Response, name: reqwest::header::HeaderName) -> Option<String> {
+    response
+        .headers()
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
 }
 
 /// True when `task.dest` is already the complete, verified file this task
@@ -1155,6 +1366,26 @@ pub async fn hash_file(path: &Path, algo: HashAlgo) -> Result<String, DownloadEr
     Ok(hasher.finalize_hex())
 }
 
+/// Blocking variant for callers that already run on a worker thread (for
+/// example the `dist/` builder inside `spawn_blocking`).
+pub fn hash_file_blocking(path: &Path, algo: HashAlgo) -> Result<String, DownloadError> {
+    use std::io::Read as _;
+
+    let mut file = std::fs::File::open(path).map_err(|source| io_error(path, source))?;
+    let mut hasher = algo.new_hasher();
+    let mut buffer = vec![0u8; COPY_BUFFER];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|source| io_error(path, source))?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hasher.finalize_hex())
+}
+
 pub fn hash_bytes(algo: HashAlgo, bytes: &[u8]) -> String {
     let mut hasher = algo.new_hasher();
     hasher.update(bytes);
@@ -1177,7 +1408,7 @@ pub fn safe_extract_zip(zip_path: &Path, dest: &Path) -> Result<Vec<PathBuf>, Do
 pub fn safe_extract_zip_with_cancel(
     zip_path: &Path,
     dest: &Path,
-    cancel: Option<&AtomicBool>,
+    cancel: Option<&CancelToken>,
 ) -> Result<Vec<PathBuf>, DownloadError> {
     std::fs::create_dir_all(dest).map_err(|source| io_error(dest, source))?;
     let dest_canonical = dest
@@ -1191,7 +1422,7 @@ pub fn safe_extract_zip_with_cancel(
 
     let mut extracted = Vec::new();
     for index in 0..archive.len() {
-        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        if cancel.is_some_and(CancelToken::is_cancelled) {
             return Err(DownloadError::Cancelled);
         }
         let mut entry = archive
@@ -1284,7 +1515,12 @@ pub enum DownloadError {
     #[error("неподдерживаемая схема URL: {0}")]
     UnsupportedScheme(String),
     #[error("HTTP {status} для {url}")]
-    HttpStatus { status: u16, url: String },
+    HttpStatus {
+        status: u16,
+        url: String,
+        /// Server-provided backoff hint (`Retry-After`, seconds).
+        retry_after: Option<Duration>,
+    },
     #[error("сетевая ошибка для {url}: {source}")]
     Network {
         url: String,
@@ -1315,6 +1551,12 @@ pub enum DownloadError {
     Semaphore,
     #[error("задача загрузки завершилась паникой: {0}")]
     Join(String),
+    #[error("недостаточно свободного места в {path}: нужно {needed} байт, свободно {free}")]
+    NotEnoughSpace {
+        path: PathBuf,
+        needed: u64,
+        free: u64,
+    },
     #[error("небезопасный путь в zip: {0}")]
     UnsafeZipPath(String),
     #[error("в zip обнаружена символическая ссылка: {0}")]
@@ -1330,6 +1572,14 @@ pub enum DownloadError {
 }
 
 impl DownloadError {
+    /// Server-requested delay before the next attempt, when present.
+    fn retry_after(&self) -> Option<Duration> {
+        match self {
+            Self::HttpStatus { retry_after, .. } => *retry_after,
+            _ => None,
+        }
+    }
+
     fn is_retryable(&self) -> bool {
         match self {
             Self::Network { source, .. } => {
@@ -1440,7 +1690,12 @@ mod tests {
         let source = dir.path().join("orb.ogg");
         let body = b"two asset names, one object".repeat(4096);
         tokio::fs::write(&source, &body).await?;
-        let dest = dir.path().join("assets").join("objects").join("ab").join("hash");
+        let dest = dir
+            .path()
+            .join("assets")
+            .join("objects")
+            .join("ab")
+            .join("hash");
         let url = reqwest::Url::from_file_path(&source)
             .expect("file url")
             .to_string();
@@ -1497,7 +1752,8 @@ mod tests {
     {
         let dir = tempfile::tempdir()?;
         let dest = dir.path().join("never.bin");
-        let cancel = Arc::new(AtomicBool::new(true));
+        let cancel = CancelToken::new();
+        cancel.cancel();
         let downloader = Downloader::new(1)?.with_cancel(cancel);
         let task = DownloadTask::new(
             "http://127.0.0.1:9/never.bin",
@@ -1546,8 +1802,8 @@ mod tests {
 
         let dir = tempfile::tempdir()?;
         let dest = dir.path().join("slow.bin");
-        let cancel = Arc::new(AtomicBool::new(false));
-        let downloader = Downloader::new(1)?.with_cancel(Arc::clone(&cancel));
+        let cancel = CancelToken::new();
+        let downloader = Downloader::new(1)?.with_cancel(cancel.clone());
         let (events_tx, mut events_rx) = mpsc::unbounded_channel();
         let task = DownloadTask::new(
             format!("http://{address}/slow.bin"),
@@ -1566,7 +1822,7 @@ mod tests {
             .await?
             .expect("progress event");
         assert!(matches!(first, DownloadEvent::Started { .. }));
-        cancel.store(true, Ordering::SeqCst);
+        cancel.cancel();
 
         let result = tokio::time::timeout(Duration::from_secs(5), run).await??;
         assert!(matches!(result, Err(DownloadError::Cancelled)));

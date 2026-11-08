@@ -12,12 +12,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 
 use futures_util::StreamExt;
 use pml_config::{save_json_atomic, LoaderKind, LoaderSpec};
-use pml_downloader::{hash_bytes, is_safe_relative, HashAlgo};
+use pml_downloader::{hash_bytes, is_safe_relative, CancelToken, HashAlgo};
 use serde::{Deserialize, Serialize};
 use tokio::io::AsyncWriteExt as _;
 
@@ -217,7 +215,31 @@ pub async fn fetch(
             request = request.header(reqwest::header::IF_MODIFIED_SINCE, last_modified);
         }
     }
-    let response = request.send().await?;
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(network_error) => {
+            // An offline launch must keep working when the archive is already
+            // cached: this is the same contract the JSON manifest path has.
+            if archive.is_file() {
+                match read_index(&archive) {
+                    Ok(index) => {
+                        tracing::warn!(
+                            %network_error,
+                            %url,
+                            "mrpack request failed, using cached archive"
+                        );
+                        return Ok(MrpackArchive { archive, index });
+                    }
+                    Err(cache_error) => tracing::warn!(
+                        %cache_error,
+                        path = %archive.display(),
+                        "cached .mrpack is unusable"
+                    ),
+                }
+            }
+            return Err(network_error.into());
+        }
+    };
     let response = if response.status() == reqwest::StatusCode::NOT_MODIFIED {
         // Revalidation only works when the cached archive is present and
         // readable. Otherwise the conditional request would keep returning 304
@@ -391,7 +413,7 @@ pub fn extract_overrides_with_limits(
     max_bytes: u64,
     max_files: usize,
     managed: &BTreeSet<String>,
-    cancel: Option<&AtomicBool>,
+    cancel: Option<&CancelToken>,
 ) -> Result<usize, ModpackError> {
     std::fs::create_dir_all(instance_dir).map_err(|source| ModpackError::Io {
         path: instance_dir.to_path_buf(),
@@ -413,7 +435,7 @@ pub fn extract_overrides_with_limits(
     let mut written = 0;
     let mut total_bytes: u64 = 0;
     for index in 0..zip.len() {
-        if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        if cancel.is_some_and(CancelToken::is_cancelled) {
             return Err(ModpackError::Cancelled);
         }
         let mut entry = zip.by_index(index).map_err(|error| {
@@ -521,7 +543,7 @@ pub async fn extract_overrides_when_changed(
     archive: &Path,
     instance_dir: &Path,
     managed: &BTreeSet<String>,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<CancelToken>,
 ) -> Result<Option<usize>, ModpackError> {
     let identity = archive_identity(archive);
     let state_path = instance_dir.join(OVERRIDES_STATE_FILE);
@@ -530,7 +552,10 @@ pub async fn extract_overrides_when_changed(
             .await
             .ok()
             .and_then(|bytes| serde_json::from_slice::<OverridesState>(&bytes).ok());
-        if state.as_ref().is_some_and(|state| &state.archive_identity == id) {
+        if state
+            .as_ref()
+            .is_some_and(|state| &state.archive_identity == id)
+        {
             return Ok(None);
         }
     }
@@ -545,7 +570,7 @@ pub async fn extract_overrides_when_changed(
             MAX_OVERRIDE_BYTES,
             MAX_OVERRIDE_FILES,
             &managed,
-            cancel.as_deref(),
+            cancel.as_ref(),
         )
     })
     .await
@@ -606,8 +631,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn conditional_fetch_reuses_the_cached_archive_on_304()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn conditional_fetch_reuses_the_cached_archive_on_304(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
 
         let directory = tempfile::tempdir()?;
@@ -647,7 +672,9 @@ mod tests {
                     let _ = socket.write_all(head.as_bytes()).await;
                     let _ = socket.write_all(&body_for_server).await;
                 } else {
-                    let _ = socket.write_all(b"HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n").await;
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n")
+                        .await;
                 }
             }
         });
@@ -655,9 +682,7 @@ mod tests {
         let client = reqwest::Client::builder().no_proxy().build()?;
         let key = hash_bytes(HashAlgo::Sha256, url.as_bytes())[..16].to_owned();
         let cache_dir = directory.path().join("cache");
-        let archive = cache_dir
-            .join("mrpack")
-            .join(format!("{key}.mrpack"));
+        let archive = cache_dir.join("mrpack").join(format!("{key}.mrpack"));
 
         let first = fetch(&client, &url, &cache_dir).await?;
         assert_eq!(first.index.version_id, "1.2.3");
@@ -750,11 +775,13 @@ mod tests {
         }
 
         let instance = directory.path().join("instance");
-        let error = extract_overrides_with_limits(&archive, &instance, 15, 100, &BTreeSet::new(), None)
-            .expect_err("size limit must be enforced");
+        let error =
+            extract_overrides_with_limits(&archive, &instance, 15, 100, &BTreeSet::new(), None)
+                .expect_err("size limit must be enforced");
         assert!(matches!(error, ModpackError::Validation(_)));
-        let error = extract_overrides_with_limits(&archive, &instance, 1024, 1, &BTreeSet::new(), None)
-            .expect_err("file limit must be enforced");
+        let error =
+            extract_overrides_with_limits(&archive, &instance, 1024, 1, &BTreeSet::new(), None)
+                .expect_err("file limit must be enforced");
         assert!(matches!(error, ModpackError::Validation(_)));
         Ok(())
     }
@@ -807,28 +834,34 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn overrides_are_reapplied_only_when_the_archive_changes()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn overrides_are_reapplied_only_when_the_archive_changes(
+    ) -> Result<(), Box<dyn std::error::Error>> {
         let directory = tempfile::tempdir()?;
         let archive = directory.path().join("pack.mrpack");
         write_pack(&archive, &[("overrides/config/runtime.toml", b"shipped")]);
         let instance = directory.path().join("instance");
 
-        let first = extract_overrides_when_changed(&archive, &instance, &BTreeSet::new(), None).await?;
+        let first =
+            extract_overrides_when_changed(&archive, &instance, &BTreeSet::new(), None).await?;
         assert_eq!(first, Some(1));
 
         // The user edits the config after installation.
         let config = instance.join("config").join("runtime.toml");
         std::fs::write(&config, b"user-edited")?;
 
-        let again = extract_overrides_when_changed(&archive, &instance, &BTreeSet::new(), None).await?;
+        let again =
+            extract_overrides_when_changed(&archive, &instance, &BTreeSet::new(), None).await?;
         assert_eq!(again, None, "unchanged archive must not be re-extracted");
         let content = std::fs::read(&config)?;
         assert_eq!(content, b"user-edited", "user edits must survive");
 
         // A rebuilt pack moves the fingerprint, and overrides apply once more.
-        write_pack(&archive, &[("overrides/config/runtime.toml", b"shipped v2")]);
-        let refreshed = extract_overrides_when_changed(&archive, &instance, &BTreeSet::new(), None).await?;
+        write_pack(
+            &archive,
+            &[("overrides/config/runtime.toml", b"shipped v2")],
+        );
+        let refreshed =
+            extract_overrides_when_changed(&archive, &instance, &BTreeSet::new(), None).await?;
         assert_eq!(refreshed, Some(1));
         let content = std::fs::read(&config)?;
         assert_eq!(content, b"shipped v2");

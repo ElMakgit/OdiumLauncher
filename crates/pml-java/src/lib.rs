@@ -9,13 +9,11 @@
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 use pml_config::{save_json_atomic, PortablePaths};
 use pml_downloader::{
-    safe_extract_zip_with_cancel, DownloadEvent, DownloadTask, Downloader, HashAlgo,
+    safe_extract_zip_with_cancel, CancelToken, DownloadEvent, DownloadTask, Downloader, HashAlgo,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -25,6 +23,7 @@ use tokio::task::JoinSet;
 pub const MIN_JAVA_MAJOR: u32 = 21;
 
 /// Adoptium download endpoint for the current OS and 64-bit architecture.
+/// Minecraft only needs a runtime, so the smaller `jre` image is requested.
 /// Minecraft 1.21 does not run on a 32-bit JVM, so x86 is never requested.
 pub fn adoptium_latest_url() -> String {
     let os = if cfg!(windows) {
@@ -40,7 +39,7 @@ pub fn adoptium_latest_url() -> String {
         "x64"
     };
     format!(
-        "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture={architecture}&image_type=jdk&os={os}&vendor=eclipse"
+        "https://api.adoptium.net/v3/assets/latest/21/hotspot?architecture={architecture}&image_type=jre&os={os}&vendor=eclipse"
     )
 }
 
@@ -236,12 +235,12 @@ async fn probe_java(java_exe: &Path) -> Result<JavaProbe, JavaError> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
-    parse_java_version(&text).ok_or_else(|| JavaError::BadVersion(java_exe.to_path_buf())).map(
-        |mut probe| {
+    parse_java_version(&text)
+        .ok_or_else(|| JavaError::BadVersion(java_exe.to_path_buf()))
+        .map(|mut probe| {
             probe.bits = parse_arch_bits(&text).unwrap_or(0);
             probe
-        },
-    )
+        })
 }
 
 /// Probes every plausible candidate concurrently. Broken shortcuts and stale
@@ -344,7 +343,9 @@ fn collect_candidates(paths: &PortablePaths) -> Vec<(PathBuf, JavaOrigin)> {
                     .and_then(Path::file_name)
                     .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
             {
-                let is_downloaded = entry.path().starts_with(paths.java_dir().join("temurin-21"));
+                let is_downloaded = entry
+                    .path()
+                    .starts_with(paths.java_dir().join("temurin-21"));
                 push(
                     entry.into_path(),
                     if is_downloaded {
@@ -441,8 +442,42 @@ pub async fn ensure_java(
     paths: &PortablePaths,
     downloader: &Downloader,
     progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<CancelToken>,
 ) -> Result<JavaInstallation, JavaError> {
+    if cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+        return Err(JavaError::Cancelled);
+    }
+
+    // Fast path: the runtime used last time is usually still installed.
+    // Probing a single cached executable is far cheaper than scanning every
+    // vendor folder on the machine, and it keeps the common case instant.
+    if let Some(cached) = read_cached(paths) {
+        if cached.is_file() {
+            if let Ok(probe) = probe_java(&cached).await {
+                if probe.major >= MIN_JAVA_MAJOR && probe.bits != 32 {
+                    let installation = JavaInstallation {
+                        home: cached
+                            .parent()
+                            .and_then(Path::parent)
+                            .unwrap_or(&cached)
+                            .to_path_buf(),
+                        java_exe: cached,
+                        major: probe.major,
+                        version: probe.version,
+                        bits: probe.bits,
+                        origin: JavaOrigin::Cached,
+                    };
+                    tracing::info!(
+                        java = %installation.java_exe.display(),
+                        major = installation.major,
+                        "using cached Java"
+                    );
+                    return Ok(installation);
+                }
+            }
+        }
+    }
+
     let installations = discover_all(paths).await;
     if let Some(best) = select_best(&installations) {
         tracing::info!(
@@ -464,7 +499,7 @@ async fn download_temurin_21(
     paths: &PortablePaths,
     downloader: &Downloader,
     progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<CancelToken>,
 ) -> Result<JavaInstallation, JavaError> {
     tracing::info!("no Java 21+ found, downloading Eclipse Temurin 21");
     let response = downloader
@@ -509,10 +544,7 @@ async fn download_temurin_21(
     let java_exe = match existing {
         Some(path) => path,
         None => {
-            if cancel
-                .as_ref()
-                .is_some_and(|flag| flag.load(Ordering::Relaxed))
-            {
+            if cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
                 return Err(JavaError::Cancelled);
             }
             tokio::fs::create_dir_all(&extract_dir)
@@ -525,7 +557,7 @@ async fn download_temurin_21(
             let dest = extract_dir.clone();
             let cancel_for_extract = cancel.clone();
             tokio::task::spawn_blocking(move || {
-                safe_extract_zip_with_cancel(&zip, &dest, cancel_for_extract.as_deref())
+                safe_extract_zip_with_cancel(&zip, &dest, cancel_for_extract.as_ref())
             })
             .await
             .map_err(|error| JavaError::Adoptium(format!("extract task failed: {error}")))??;
@@ -587,7 +619,8 @@ fn asset_version_key(asset: &AdoptiumAsset) -> Vec<u32> {
         .collect()
 }
 
-fn find_java_executable(root: &Path) -> Option<PathBuf> {    if !root.is_dir() {
+fn find_java_executable(root: &Path) -> Option<PathBuf> {
+    if !root.is_dir() {
         return None;
     }
     walkdir::WalkDir::new(root)
@@ -714,7 +747,7 @@ mod tests {
     #[test]
     fn adoptium_url_matches_the_current_platform() {
         let url = adoptium_latest_url();
-        assert!(url.contains("image_type=jdk"));
+        assert!(url.contains("image_type=jre"));
         assert!(url.contains("vendor=eclipse"));
         if cfg!(windows) {
             assert!(url.contains("os=windows"));

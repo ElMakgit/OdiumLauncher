@@ -291,6 +291,11 @@ pub struct Config {
     /// `source_id -> path -> enabled`. Only explicitly changed optional mods are stored.
     #[serde(default)]
     pub optional_mods_overrides: BTreeMap<String, BTreeMap<String, bool>>,
+    /// Per-source JVM settings. A pack with heavy mods can keep a larger heap
+    /// without forcing the same value on every other instance. Missing entries
+    /// fall back to the global `jvm` block.
+    #[serde(default)]
+    pub instance_jvm: BTreeMap<String, JvmConfig>,
     #[serde(default = "default_true")]
     pub close_launcher_on_start: bool,
     #[serde(default = "default_concurrency")]
@@ -315,6 +320,7 @@ impl Default for Config {
             jvm: JvmConfig::default(),
             server: ServerSpec::default(),
             optional_mods_overrides: BTreeMap::new(),
+            instance_jvm: BTreeMap::new(),
             close_launcher_on_start: true,
             download_concurrency: default_concurrency(),
             welcome_seen: false,
@@ -330,6 +336,19 @@ impl Config {
 
     pub fn active_source(&self) -> Option<&Source> {
         self.source(&self.active_source_id)
+    }
+
+    /// JVM settings for a source, falling back to the global block.
+    pub fn jvm_for(&self, source_id: &str) -> JvmConfig {
+        self.instance_jvm
+            .get(source_id)
+            .cloned()
+            .unwrap_or_else(|| self.jvm.clone())
+    }
+
+    /// Remembers a source's heap settings without touching the global block.
+    pub fn set_jvm_for(&mut self, source_id: &str, jvm: JvmConfig) {
+        self.instance_jvm.insert(source_id.to_owned(), jvm);
     }
 
     /// Fixes benign inconsistencies from hand-edited configs without discarding data.
@@ -591,6 +610,7 @@ impl PortablePaths {
             paths.meta_dir(),
             paths.loaders_dir(),
             paths.temp_dir(),
+            paths.backups_dir(),
         ] {
             fs::create_dir_all(&dir).map_err(|source| ConfigError::Io { path: dir, source })?;
         }
@@ -648,6 +668,11 @@ impl PortablePaths {
 
     pub fn temp_dir(&self) -> PathBuf {
         self.root.join("temp")
+    }
+
+    /// Rotated snapshots of worlds and configs taken before a pack update.
+    pub fn backups_dir(&self) -> PathBuf {
+        self.root.join("backups")
     }
 }
 
@@ -1029,6 +1054,7 @@ mod tests {
                 "survival".to_owned(),
                 BTreeMap::from([("mods/shaders.jar".to_owned(), true)]),
             )]),
+            instance_jvm: BTreeMap::new(),
             close_launcher_on_start: false,
             download_concurrency: 6,
             welcome_seen: true,
@@ -1190,26 +1216,35 @@ mod tests {
 
         assert_eq!(fs::read(target.join("config.json"))?, b"user");
         assert!(target.join("instances.marker").is_file());
-        assert!(legacy.exists(), "an existing root must not consume legacy data");
+        assert!(
+            legacy.exists(),
+            "an existing root must not consume legacy data"
+        );
         Ok(())
     }
 
     #[test]
-    fn incomplete_system_root_is_merged_with_legacy_data(
-    ) -> Result<(), Box<dyn std::error::Error>> {
+    fn incomplete_system_root_is_merged_with_legacy_data() -> Result<(), Box<dyn std::error::Error>>
+    {
         let temp = tempfile::tempdir()?;
         let legacy = temp.path().join("launcher_data");
         let target = temp.path().join("system").join("OdiumLauncher");
         fs::create_dir_all(legacy.join("assets").join("objects"))?;
         fs::write(legacy.join("config.json"), b"{\"nick\":\"Steve\"}")?;
-        fs::write(legacy.join("assets").join("objects").join("a.bin"), b"asset")?;
+        fs::write(
+            legacy.join("assets").join("objects").join("a.bin"),
+            b"asset",
+        )?;
         fs::create_dir_all(target.join("mrpack-cache"))?;
         fs::write(target.join("mrpack-cache").join("keep.tmp"), b"cache")?;
 
         migrate_legacy_data(&legacy, &target);
 
         assert!(!legacy.exists(), "legacy folder must be consumed");
-        assert_eq!(fs::read(target.join("config.json"))?, b"{\"nick\":\"Steve\"}");
+        assert_eq!(
+            fs::read(target.join("config.json"))?,
+            b"{\"nick\":\"Steve\"}"
+        );
         assert_eq!(
             fs::read(target.join("assets").join("objects").join("a.bin"))?,
             b"asset"

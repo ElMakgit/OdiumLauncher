@@ -8,6 +8,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use pml_config::{save_json_atomic, LoaderSpec, PortablePaths, ServerSpec};
 use pml_downloader::{
@@ -224,10 +225,9 @@ fn validate_version_label(field: &str, value: &str) -> Result<(), ModpackError> 
             "{field} имеет недопустимую длину"
         )));
     }
-    if !value
-        .chars()
-        .all(|character| character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '+' | '-'))
-    {
+    if !value.chars().all(|character| {
+        character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '+' | '-')
+    }) {
         return Err(ModpackError::Validation(format!(
             "{field} содержит недопустимые символы: {value}"
         )));
@@ -464,8 +464,19 @@ pub(crate) fn local_path(value: &str) -> PathBuf {
 struct SyncState {
     #[serde(default = "default_schema_version")]
     schema_version: u32,
+    /// Pack version that produced the current instance. Used to decide whether
+    /// an update is due a backup of worlds/configs before the delta sync.
+    #[serde(default)]
+    pack_version: String,
     #[serde(default)]
     files: BTreeMap<String, String>,
+}
+
+/// Returns the pack version recorded by the last successful sync, if any.
+pub async fn synced_pack_version(instance_dir: &Path) -> Option<String> {
+    let bytes = tokio::fs::read(instance_dir.join(STATE_FILE)).await.ok()?;
+    let state: SyncState = serde_json::from_slice(&bytes).ok()?;
+    (!state.pack_version.is_empty()).then_some(state.pack_version)
 }
 
 pub struct SyncRequest<'a> {
@@ -601,6 +612,7 @@ impl ModpackSync {
         }
 
         state.schema_version = MANIFEST_SCHEMA_VERSION;
+        state.pack_version = request.manifest.version.clone();
         save_json_atomic(&state_path, &state)?;
         tracing::info!(
             instance = %request.instance_dir.display(),
@@ -623,6 +635,119 @@ async fn load_state(path: &Path) -> SyncState {
         Err(error) => {
             tracing::warn!(%error, path = %path.display(), "ignoring corrupt sync state");
             SyncState::default()
+        }
+    }
+}
+
+/// Files a pack update must never silently overwrite. Worlds and user configs
+/// are copied before the delta sync; the caller decides when a backup is due
+/// (normally only when the pack version changes).
+const BACKUP_ENTRIES: [&str; 4] = ["saves", "config", "options.txt", "servers.dat"];
+
+/// Copies worlds/configs into `backups_root/<source_id>/<unix>/` and keeps the
+/// newest `keep` snapshots. Blocking; call it from `spawn_blocking`.
+pub fn backup_instance(
+    instance_dir: &Path,
+    backups_root: &Path,
+    source_id: &str,
+    keep: usize,
+) -> Result<Option<PathBuf>, ModpackError> {
+    if !pml_config::is_valid_source_id(source_id) {
+        return Err(ModpackError::Validation(format!(
+            "небезопасный source_id: {source_id}"
+        )));
+    }
+    let present = BACKUP_ENTRIES
+        .iter()
+        .filter(|name| instance_dir.join(name).exists())
+        .collect::<Vec<_>>();
+    if present.is_empty() {
+        return Ok(None);
+    }
+
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or(0);
+    let destination = backups_root.join(source_id).join(stamp.to_string());
+    std::fs::create_dir_all(&destination).map_err(|source| ModpackError::Io {
+        path: destination.clone(),
+        source,
+    })?;
+    for name in present {
+        let from = instance_dir.join(name);
+        let to = destination.join(name);
+        if from.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else {
+            std::fs::copy(&from, &to).map_err(|source| ModpackError::Io {
+                path: to.clone(),
+                source,
+            })?;
+        }
+    }
+
+    rotate_backups(&destination, keep);
+    tracing::info!(
+        path = %destination.display(),
+        "created an instance backup before the pack update"
+    );
+    Ok(Some(destination))
+}
+
+fn copy_dir_recursive(source: &Path, destination: &Path) -> Result<(), ModpackError> {
+    std::fs::create_dir_all(destination).map_err(|error| ModpackError::Io {
+        path: destination.to_path_buf(),
+        source: error,
+    })?;
+    for entry in std::fs::read_dir(source).map_err(|error| ModpackError::Io {
+        path: source.to_path_buf(),
+        source: error,
+    })? {
+        let entry = entry.map_err(|error| ModpackError::Io {
+            path: source.to_path_buf(),
+            source: error,
+        })?;
+        let file_type = entry.file_type().map_err(|error| ModpackError::Io {
+            path: entry.path(),
+            source: error,
+        })?;
+        // Symlinks are never produced by the launcher and are skipped so a
+        // malicious pack cannot make the backup read outside the instance.
+        if file_type.is_symlink() {
+            continue;
+        }
+        let from = entry.path();
+        let to = destination.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir_recursive(&from, &to)?;
+        } else if file_type.is_file() {
+            std::fs::copy(&from, &to).map_err(|error| ModpackError::Io {
+                path: to.clone(),
+                source: error,
+            })?;
+        }
+    }
+    Ok(())
+}
+
+fn rotate_backups(snapshot: &Path, keep: usize) {
+    let Some(parent) = snapshot.parent() else {
+        return;
+    };
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return;
+    };
+    let mut snapshots = entries
+        .flatten()
+        .filter(|entry| entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false))
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    // Names are unix timestamps, so reverse lexicographic order is newest first.
+    snapshots.sort_by(|left, right| right.file_name().cmp(&left.file_name()));
+    for old in snapshots.into_iter().skip(keep.max(1)) {
+        if let Err(error) = std::fs::remove_dir_all(&old) {
+            tracing::warn!(%error, path = %old.display(), "could not prune an old backup");
         }
     }
 }
@@ -683,6 +808,53 @@ mod tests {
             Some("45.85.60.39:25592")
         );
         assert_eq!(manifest.loader.kind, pml_config::LoaderKind::Fabric);
+    }
+
+    #[test]
+    fn backup_instance_copies_worlds_and_prunes_old_snapshots() {
+        let directory = tempfile::tempdir().expect("tempdir");
+        let instance = directory.path().join("instance");
+        std::fs::create_dir_all(instance.join("saves").join("world")).expect("saves");
+        std::fs::write(
+            instance.join("saves").join("world").join("level.dat"),
+            b"world",
+        )
+        .expect("level");
+        std::fs::write(instance.join("options.txt"), b"fov:90").expect("options");
+        let backups = directory.path().join("backups");
+
+        let snapshot = backup_instance(&instance, &backups, "pack", 2)
+            .expect("backup")
+            .expect("some backup");
+        assert!(snapshot
+            .join("saves")
+            .join("world")
+            .join("level.dat")
+            .is_file());
+        assert_eq!(
+            std::fs::read(snapshot.join("options.txt")).expect("options"),
+            b"fov:90"
+        );
+
+        // A second call with a distinct timestamp keeps both snapshots.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        backup_instance(&instance, &backups, "pack", 2)
+            .expect("backup")
+            .expect("some backup");
+        let count = std::fs::read_dir(backups.join("pack"))
+            .expect("list")
+            .count();
+        assert_eq!(count, 2);
+
+        // A third call prunes the oldest one, never the newest.
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        backup_instance(&instance, &backups, "pack", 2)
+            .expect("backup")
+            .expect("some backup");
+        let count = std::fs::read_dir(backups.join("pack"))
+            .expect("list")
+            .count();
+        assert_eq!(count, 2);
     }
 
     #[test]
@@ -748,8 +920,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn manifest_network_failure_falls_back_to_cache()
-    -> Result<(), Box<dyn std::error::Error>> {
+    async fn manifest_network_failure_falls_back_to_cache() -> Result<(), Box<dyn std::error::Error>>
+    {
         let directory = tempfile::tempdir()?;
         // Bind a port, then drop the listener: the connection is refused with
         // no resolver involved, which must degrade to the last good manifest.
@@ -763,7 +935,7 @@ mod tests {
             "{}.json",
             &hash_bytes(HashAlgo::Sha256, url.as_bytes())[..16]
         ));
-        tokio::fs::create_dir_all(cache.parent().unwrap()).await?;
+        tokio::fs::create_dir_all(cache.parent().expect("cache path has a parent")).await?;
         tokio::fs::write(&cache, sample_manifest().to_json_pretty()?).await?;
 
         let client = reqwest::Client::builder().no_proxy().build()?;

@@ -101,6 +101,36 @@ impl LauncherApp {
                 }
             }
 
+            let server = self
+                .manifest
+                .as_ref()
+                .and_then(|manifest| manifest.server.clone())
+                .unwrap_or_else(|| self.store.config().server.clone());
+            ui.add_space(2.0);
+            let (text, color) = match self.server_status {
+                Some(status) if status.reachable => (
+                    format!(
+                        "Сервер {}: онлайн ({} мс)",
+                        server.display(),
+                        status.latency_ms
+                    ),
+                    None,
+                ),
+                Some(_) => (
+                    format!("Сервер {}: недоступен", server.display()),
+                    Some(pml_theme::error_color(self.theme)),
+                ),
+                None => (format!("Сервер {}: проверка…", server.display()), None),
+            };
+            match color {
+                Some(color) => {
+                    ui.colored_label(color, text);
+                }
+                None => {
+                    ui.label(text);
+                }
+            }
+
             // Optional components are part of the manifest contract; exposing
             // them here makes the stored per-source overrides discoverable.
             let optional_files = self
@@ -533,7 +563,7 @@ impl LauncherApp {
 
             if self.busy && pml_theme::button(ui, self.theme, "Отмена", true).clicked() {
                 if let Some(cancel) = &self.cancel {
-                    cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                    cancel.cancel();
                 }
                 self.status = "Отмена…".to_owned();
             }

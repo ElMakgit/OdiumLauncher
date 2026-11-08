@@ -147,6 +147,15 @@ pub fn tail_log(path: &Path, max_lines: usize) -> Vec<String> {
     lines.into_iter().skip(skip).collect()
 }
 
+/// Runs the blocking tail on the Tokio blocking pool. The UI thread calls this
+/// every half second while the game is running; a slow antivirus read must not
+/// stall a frame.
+pub async fn tail_log_async(path: PathBuf, max_lines: usize) -> Vec<String> {
+    tokio::task::spawn_blocking(move || tail_log(&path, max_lines))
+        .await
+        .unwrap_or_default()
+}
+
 #[cfg(windows)]
 fn hide_console(command: &mut Command) {
     const CREATE_NO_WINDOW: u32 = 0x0800_0000;

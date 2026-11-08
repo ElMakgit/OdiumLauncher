@@ -8,12 +8,10 @@
 
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::Duration;
 
 use pml_config::{LoaderKind, LoaderSpec, PortablePaths};
-use pml_downloader::{DownloadEvent, DownloadTask, Downloader, HashAlgo};
+use pml_downloader::{CancelToken, DownloadEvent, DownloadTask, Downloader, HashAlgo};
 use pml_minecraft::VersionJson;
 use thiserror::Error;
 use tokio::sync::mpsc;
@@ -59,14 +57,13 @@ pub enum LoaderError {
     #[error(".sha1 для {0} недоступен; загрузка установщика без проверки отменена")]
     Sha1Unavailable(String),
     #[error("профиль загрузчика наследует {actual}, сборка требует {expected}")]
-    ProfileMismatch {
-        actual: String,
-        expected: String,
-    },
+    ProfileMismatch { actual: String, expected: String },
     #[error("установщик {0} не создал version JSON")]
     MissingVersionJson(String),
     #[error("профиль загрузчика не найден: {0}")]
     MissingProfile(PathBuf),
+    #[error("небезопасный URL загрузчика (требуется HTTPS): {0}")]
+    InsecureUrl(String),
     #[error("не удалось запустить установщик: {0}")]
     Spawn(String),
 }
@@ -83,7 +80,7 @@ struct InstallerRequest<'a> {
     cache: &'a Path,
     java_exe: &'a Path,
     version_id: &'a str,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<CancelToken>,
 }
 
 impl LoaderInstaller {
@@ -102,7 +99,7 @@ impl LoaderInstaller {
         spec: &LoaderSpec,
         java_exe: &Path,
         progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
-        cancel: Option<Arc<AtomicBool>>,
+        cancel: Option<CancelToken>,
     ) -> Result<VersionJson, LoaderError> {
         let profile = match spec.kind {
             LoaderKind::Fabric => {
@@ -160,7 +157,8 @@ impl LoaderInstaller {
         cache: &Path,
         progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
     ) -> Result<VersionJson, LoaderError> {
-        if let Some(profile) = read_profile(cache).await {
+        require_https(url)?;
+        if let Some(profile) = read_verified_profile(cache).await {
             tracing::debug!(path = %cache.display(), "using cached loader profile");
             return Ok(profile);
         }
@@ -182,9 +180,11 @@ impl LoaderInstaller {
             "loader profile",
         );
         self.downloader.download_many(vec![task], progress).await?;
-        read_profile(cache)
+        let profile = read_profile(cache)
             .await
-            .ok_or_else(|| LoaderError::MissingProfile(cache.to_path_buf()))
+            .ok_or_else(|| LoaderError::MissingProfile(cache.to_path_buf()))?;
+        write_profile_hash(cache).await;
+        Ok(profile)
     }
 
     async fn install_with_java(
@@ -200,6 +200,7 @@ impl LoaderInstaller {
             version_id,
             cancel,
         } = request;
+        require_https(url)?;
         // The installer also writes its JSON into versions/. Reuse it when it is
         // already there, which makes subsequent launches network-free.
         if let Some(profile) = self.locate_version_json(version_id).await {
@@ -241,10 +242,8 @@ impl LoaderInstaller {
         }
 
         // A cancelled run must never spawn the installer in the first place.
-        if let Some(flag) = cancel.as_ref() {
-            if flag.load(Ordering::SeqCst) {
-                return Err(LoaderError::InstallerCancelled(loader_name.to_owned()));
-            }
+        if cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+            return Err(LoaderError::InstallerCancelled(loader_name.to_owned()));
         }
 
         let mut command = tokio::process::Command::new(java_exe);
@@ -415,15 +414,62 @@ fn validate_profile(profile: &VersionJson, mc_version: &str) -> Result<(), Loade
     }
 }
 
-/// Resolves when the flag is set; without a flag it never resolves. Used as
-/// the cancellation arm of the `select!` around the installer run.
-async fn wait_for_cancel(cancel: Option<&Arc<AtomicBool>>) {
-    let Some(flag) = cancel else {
-        std::future::pending::<()>().await;
+/// Resolves when the token is cancelled; without a token it never resolves.
+/// Used as the cancellation arm of the `select!` around the installer run.
+async fn wait_for_cancel(cancel: Option<&CancelToken>) {
+    match cancel {
+        Some(token) => token.cancelled().await,
+        None => std::future::pending::<()>().await,
+    }
+}
+
+/// Loader metadata and installers are executable content; a plaintext HTTP
+/// endpoint would let anyone on the path swap them. Every loader URL is
+/// hard-coded to HTTPS, so a mismatch is a bug or an attack.
+fn require_https(url: &str) -> Result<(), LoaderError> {
+    if url.starts_with("https://") {
+        Ok(())
+    } else {
+        Err(LoaderError::InsecureUrl(url.to_owned()))
+    }
+}
+
+fn profile_hash_path(cache: &Path) -> PathBuf {
+    let mut name = cache.file_name().unwrap_or_default().to_os_string();
+    name.push(".sha256");
+    cache.with_file_name(name)
+}
+
+/// Reads a cached profile only when its sidecar digest matches. A missing
+/// sidecar (a cache written by an older build) is accepted and upgraded on the
+/// next successful read; a mismatching one is treated as corrupt.
+async fn read_verified_profile(cache: &Path) -> Option<VersionJson> {
+    let bytes = tokio::fs::read(cache).await.ok()?;
+    let profile: VersionJson = serde_json::from_slice(&bytes).ok()?;
+    match tokio::fs::read_to_string(profile_hash_path(cache)).await {
+        Ok(expected) => {
+            let actual = pml_downloader::hash_bytes(HashAlgo::Sha256, &bytes);
+            if expected.trim().eq_ignore_ascii_case(&actual) {
+                Some(profile)
+            } else {
+                tracing::warn!(path = %cache.display(), "cached loader profile digest mismatch");
+                None
+            }
+        }
+        Err(_) => {
+            write_profile_hash(cache).await;
+            Some(profile)
+        }
+    }
+}
+
+async fn write_profile_hash(cache: &Path) {
+    let Ok(bytes) = tokio::fs::read(cache).await else {
         return;
     };
-    while !flag.load(Ordering::SeqCst) {
-        tokio::time::sleep(Duration::from_millis(100)).await;
+    let hash = pml_downloader::hash_bytes(HashAlgo::Sha256, &bytes);
+    if let Err(error) = tokio::fs::write(profile_hash_path(cache), hash).await {
+        tracing::debug!(%error, path = %cache.display(), "failed to write profile digest");
     }
 }
 

@@ -79,5 +79,42 @@ fn init_logging(paths: &PortablePaths) -> Result<tracing_appender::non_blocking:
 fn install_panic_hook() {
     std::panic::set_hook(Box::new(|info| {
         tracing::error!(panic = %info, "unhandled panic");
+        // A double-clicked GUI has no visible console: without a dialog the
+        // window simply vanishes and the user has no idea what happened.
+        show_panic_dialog(&info.to_string());
     }));
+}
+
+#[cfg(windows)]
+fn show_panic_dialog(details: &str) {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{MessageBoxW, MB_ICONERROR, MB_OK};
+
+    let text = format!(
+        "Odium Launcher столкнулся с непредвиденной ошибкой.\n\n{details}\n\n\
+         Подробности записаны в журнал лаунчера."
+    );
+    let text: Vec<u16> = std::ffi::OsStr::new(&text)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    let title: Vec<u16> = std::ffi::OsStr::new(pml_config::BRAND_NAME)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+    // SAFETY: both buffers are NUL-terminated UTF-16 strings that outlive the
+    // call; a null owner window is valid for a process-wide message box.
+    unsafe {
+        MessageBoxW(
+            std::ptr::null_mut(),
+            text.as_ptr(),
+            title.as_ptr(),
+            MB_OK | MB_ICONERROR,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+fn show_panic_dialog(details: &str) {
+    eprintln!("Odium Launcher panicked: {details}");
 }

@@ -6,15 +6,13 @@
 //! Downloads additionally stream `DownloadEvent`s into the same channel.
 
 use std::path::PathBuf;
-use std::sync::atomic::AtomicBool;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
 use pml_config::{ConfigStore, PortablePaths, Source, Theme};
-use pml_downloader::{DownloadEvent, Downloader};
+use pml_downloader::{CancelToken, DownloadEvent, Downloader};
 use pml_java::JavaInstallation;
-use pml_launcher::tail_log;
+use pml_launcher::tail_log_async;
 use pml_modpack::{load_pack, Manifest};
 use tokio::sync::mpsc;
 
@@ -31,6 +29,15 @@ use pipeline::UiEvent;
 use publisher::PublisherState;
 use util::{format_bytes, total_system_ram_mb};
 use welcome::WelcomeState;
+
+/// Result of the lightweight reachability probe shown next to the server
+/// address. It is a TCP connect, not a full Minecraft status handshake, so it
+/// works without a protocol implementation and never loads a player list.
+#[derive(Debug, Clone, Copy)]
+struct ServerStatus {
+    reachable: bool,
+    latency_ms: u128,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum UiError {
@@ -94,7 +101,7 @@ struct LauncherApp {
     runtime: tokio::runtime::Handle,
     downloader: Downloader,
     events_rx: Option<mpsc::UnboundedReceiver<UiEvent>>,
-    cancel: Option<Arc<AtomicBool>>,
+    cancel: Option<CancelToken>,
     manifest_rx: Option<mpsc::UnboundedReceiver<Result<Manifest, String>>>,
     manifest: Option<Manifest>,
     manifest_error: Option<String>,
@@ -113,7 +120,11 @@ struct LauncherApp {
     game_running: bool,
     log_path: Option<PathBuf>,
     log_lines: Vec<String>,
+    log_rx: Option<mpsc::UnboundedReceiver<Vec<String>>>,
     last_log_poll: Instant,
+    server_status: Option<ServerStatus>,
+    server_rx: Option<mpsc::UnboundedReceiver<ServerStatus>>,
+    last_server_ping: Instant,
     error: Option<String>,
     auto_refreshed: bool,
     publisher: PublisherState,
@@ -142,14 +153,15 @@ impl LauncherApp {
         let max_xmx = total_ram_mb.saturating_sub(1024).clamp(1024, 65_536);
         // New installs use exactly half of the physical RAM. Moving the Xmx
         // slider disables auto mode so an explicit choice survives restarts.
-        let auto_xmx = config.jvm.auto_xmx;
+        let jvm = config.jvm_for(&config.active_source_id);
+        let auto_xmx = jvm.auto_xmx;
         let xmx = if auto_xmx {
             (total_ram_mb / 2).max(1024)
         } else {
-            config.jvm.xmx
+            jvm.xmx
         };
         let xmx = xmx.clamp(1024, max_xmx);
-        let xms = config.jvm.xms.clamp(512, xmx);
+        let xms = jvm.xms.clamp(512, xmx);
         Self {
             paths,
             source_id: config.active_source_id.clone(),
@@ -175,7 +187,11 @@ impl LauncherApp {
             game_running: false,
             log_path: None,
             log_lines: Vec::new(),
+            log_rx: None,
             last_log_poll: Instant::now(),
+            server_status: None,
+            server_rx: None,
+            last_server_ping: Instant::now() - Duration::from_secs(30),
             error: None,
             auto_refreshed: false,
             publisher: PublisherState::new(),
@@ -199,9 +215,15 @@ impl LauncherApp {
         {
             let config = self.store.config_mut();
             config.nick = self.nick.clone();
-            config.jvm.xms = self.xms;
-            config.jvm.xmx = self.xmx;
-            config.jvm.auto_xmx = self.auto_xmx;
+            let jvm = pml_config::JvmConfig {
+                xms: self.xms,
+                xmx: self.xmx,
+                auto_xmx: self.auto_xmx,
+            };
+            // The global block is the fallback for sources that never had an
+            // explicit choice; the per-source entry keeps this pack's value.
+            config.jvm = jvm.clone();
+            config.set_jvm_for(&self.source_id, jvm);
             config.close_launcher_on_start = self.close_on_start;
             config.active_source_id = self.source_id.clone();
             config.theme = self.theme;
@@ -211,11 +233,28 @@ impl LauncherApp {
         }
     }
 
+    /// Loads the heap settings remembered for the active source, falling back
+    /// to the global defaults and clamping them to this machine.
+    fn apply_jvm_for_active_source(&mut self) {
+        let jvm = self.store.config().jvm_for(&self.source_id);
+        self.auto_xmx = jvm.auto_xmx;
+        let xmx = if jvm.auto_xmx {
+            (self.total_ram_mb / 2).max(1024)
+        } else {
+            jvm.xmx
+        };
+        self.xmx = xmx.clamp(1024, self.max_xmx);
+        self.xms = jvm.xms.clamp(512, self.xmx);
+    }
+
     fn select_source(&mut self, id: &str) {
         if self.source_id == id {
             return;
         }
+        // Keep the current pack's heap choice before switching to another one.
+        self.persist();
         self.source_id = id.to_owned();
+        self.apply_jvm_for_active_source();
         self.manifest = None;
         self.manifest_error = None;
         self.persist();
@@ -304,11 +343,11 @@ impl LauncherApp {
 
         let config = self.store.config().clone();
         let paths = self.paths.clone();
-        let cancel = Arc::new(AtomicBool::new(false));
-        let cancel_for_task = Arc::clone(&cancel);
+        let cancel = CancelToken::new();
+        let cancel_for_task = cancel.clone();
         // One cancellable clone flows through the whole pipeline; individual
         // domain crates keep their plain `Downloader` parameters.
-        let downloader = self.downloader.with_cancel(Arc::clone(&cancel));
+        let downloader = self.downloader.with_cancel(cancel.clone());
         let (tx, rx) = mpsc::unbounded_channel();
         let task_tx = tx.clone();
 
@@ -344,6 +383,57 @@ impl LauncherApp {
         self.log_lines.clear();
     }
 
+    /// Queues a background tail of the game log. Only one request is in flight
+    /// at a time; a slow disk therefore cannot pile up tasks or block a frame.
+    fn request_log_tail(&mut self, path: PathBuf) {
+        if self.log_rx.is_some() {
+            return;
+        }
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.log_rx = Some(rx);
+        self.runtime.spawn(async move {
+            let lines = tail_log_async(path, 200).await;
+            let _ = tx.send(lines);
+        });
+    }
+
+    /// Starts a background reachability probe of the active server. A TCP
+    /// connect is enough to tell the player "online" from "unreachable"; the
+    /// full status protocol is deliberately not implemented here.
+    fn request_server_ping(&mut self) {
+        if self.server_rx.is_some() {
+            return;
+        }
+        let server = self
+            .manifest
+            .as_ref()
+            .and_then(|manifest| manifest.server.clone())
+            .unwrap_or_else(|| self.store.config().server.clone());
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.server_rx = Some(rx);
+        self.last_server_ping = Instant::now();
+        self.runtime.spawn(async move {
+            let started = Instant::now();
+            let address = format!("{}:{}", server.ip, server.port);
+            let status = match tokio::time::timeout(
+                Duration::from_secs(3),
+                tokio::net::TcpStream::connect(&address),
+            )
+            .await
+            {
+                Ok(Ok(_stream)) => ServerStatus {
+                    reachable: true,
+                    latency_ms: started.elapsed().as_millis(),
+                },
+                _ => ServerStatus {
+                    reachable: false,
+                    latency_ms: 0,
+                },
+            };
+            let _ = tx.send(status);
+        });
+    }
+
     fn poll_events(&mut self, ctx: &egui::Context) {
         let mut close_after_start = false;
         if let Some(mut receiver) = self.events_rx.take() {
@@ -369,7 +459,8 @@ impl LauncherApp {
                             Some(pid) => format!("Игра запущена (PID {pid})"),
                             None => "Игра запущена".to_owned(),
                         };
-                        self.log_lines = tail_log(&log_path, 200);
+                        self.log_lines.clear();
+                        self.request_log_tail(log_path.clone());
                         self.last_log_poll = Instant::now();
                         self.log_path = Some(log_path);
                         close_after_start = self.close_on_start;
@@ -381,8 +472,8 @@ impl LauncherApp {
                             Some(code) => format!("Игра завершилась с кодом {code}"),
                             None => "Игра завершилась".to_owned(),
                         };
-                        if let Some(path) = &self.log_path {
-                            self.log_lines = tail_log(path, 200);
+                        if let Some(path) = self.log_path.clone() {
+                            self.request_log_tail(path);
                         }
                     }
                     Ok(UiEvent::Finished) => {
@@ -434,14 +525,37 @@ impl LauncherApp {
             }
         }
 
+        if let Some(mut receiver) = self.log_rx.take() {
+            match receiver.try_recv() {
+                Ok(lines) => self.log_lines = lines,
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    self.log_rx = Some(receiver);
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {}
+            }
+        }
+
+        if let Some(mut receiver) = self.server_rx.take() {
+            match receiver.try_recv() {
+                Ok(status) => self.server_status = Some(status),
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    self.server_rx = Some(receiver);
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {}
+            }
+        }
+        if self.server_rx.is_none() && self.last_server_ping.elapsed() >= Duration::from_secs(30) {
+            self.request_server_ping();
+        }
+
         if close_after_start {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
 
         if self.game_running && self.last_log_poll.elapsed() >= Duration::from_millis(500) {
             self.last_log_poll = Instant::now();
-            if let Some(path) = &self.log_path {
-                self.log_lines = tail_log(path, 200);
+            if let Some(path) = self.log_path.clone() {
+                self.request_log_tail(path);
             }
         }
     }

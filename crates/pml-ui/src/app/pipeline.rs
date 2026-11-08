@@ -7,22 +7,23 @@
 //! without keeping the whole pipeline alive.
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::Duration;
 
 use pml_config::{Config, PortablePaths, Source};
-use pml_downloader::{DownloadEvent, Downloader};
+use pml_downloader::{CancelToken, DownloadEvent, Downloader};
 use pml_java::{ensure_java, JavaInstallation};
 use pml_launcher::{spawn_game, LaunchSpec};
 use pml_loader::LoaderInstaller;
 use pml_minecraft::{LaunchRequest, Minecraft, UserProfile};
 use pml_modpack::{
-    extract_overrides_when_changed, load_pack, normalize_path, Manifest, ModpackSync, SyncRequest,
+    backup_instance, extract_overrides_when_changed, load_pack, normalize_path,
+    synced_pack_version, Manifest, ModpackSync, SyncRequest,
 };
 use tokio::sync::mpsc;
 
 pub(super) const CANCELLED: &str = "Отменено";
+
+/// Number of pack-update snapshots kept per source before the oldest is pruned.
+const BACKUPS_TO_KEEP: usize = 3;
 
 pub(super) enum UiEvent {
     Stage(String),
@@ -42,12 +43,12 @@ pub(super) enum UiEvent {
 /// inside the downloader, installer or filesystem.
 fn stage_result<T, E: std::fmt::Display>(
     result: Result<T, E>,
-    cancel: &AtomicBool,
+    cancel: &CancelToken,
     stage: &str,
 ) -> Result<T, String> {
     match result {
         Ok(value) => Ok(value),
-        Err(_) if cancel.load(Ordering::SeqCst) => Err(CANCELLED.to_owned()),
+        Err(_) if cancel.is_cancelled() => Err(CANCELLED.to_owned()),
         Err(error) => Err(format!("{stage}: {error}")),
     }
 }
@@ -55,10 +56,8 @@ fn stage_result<T, E: std::fmt::Display>(
 /// Resolves when the user presses "Отмена". `select!` drops the losing future,
 /// which closes an in-flight metadata/mrpack HTTP request instead of waiting
 /// for a multi-megabyte body. Batch downloads use the downloader's own token.
-async fn wait_for_cancel(cancel: &AtomicBool) {
-    while !cancel.load(Ordering::SeqCst) {
-        tokio::time::sleep(Duration::from_millis(100)).await;
-    }
+async fn wait_for_cancel(cancel: &CancelToken) {
+    cancel.cancelled().await;
 }
 
 pub(super) async fn run_pipeline(
@@ -67,10 +66,10 @@ pub(super) async fn run_pipeline(
     config: Config,
     source: Source,
     tx: mpsc::UnboundedSender<UiEvent>,
-    cancel: Arc<AtomicBool>,
+    cancel: CancelToken,
 ) -> Result<(), String> {
     let check_cancel = || {
-        if cancel.load(Ordering::SeqCst) {
+        if cancel.is_cancelled() {
             Err(CANCELLED.to_owned())
         } else {
             Ok(())
@@ -114,7 +113,7 @@ pub(super) async fn run_pipeline(
             &paths,
             &downloader,
             Some(download_tx.clone()),
-            Some(Arc::clone(&cancel)),
+            Some(cancel.clone()),
         ) => {
             stage_result(result, &cancel, "Java")?
         }
@@ -137,7 +136,7 @@ pub(super) async fn run_pipeline(
                 &manifest.loader,
                 &java.java_exe,
                 Some(download_tx.clone()),
-                Some(Arc::clone(&cancel)),
+                Some(cancel.clone()),
             )
             .await,
         &cancel,
@@ -153,6 +152,38 @@ pub(super) async fn run_pipeline(
         .get(&source.id)
         .cloned()
         .unwrap_or_default();
+
+    // A pack update must not silently overwrite worlds or hand-edited configs.
+    // Snapshot them once per version bump; ordinary launches skip the copy.
+    let previous_version = synced_pack_version(&instance_dir).await;
+    let version_changed = previous_version
+        .as_deref()
+        .is_some_and(|version| !version.is_empty() && version != manifest.version);
+    if version_changed {
+        tx.send(UiEvent::Stage(
+            "Резервная копия мира и конфигов…".to_owned(),
+        ))
+        .ok();
+        let instance = instance_dir.clone();
+        let backups = paths.backups_dir();
+        let source_id = source.id.clone();
+        match tokio::task::spawn_blocking(move || {
+            backup_instance(&instance, &backups, &source_id, BACKUPS_TO_KEEP)
+        })
+        .await
+        {
+            Ok(Ok(Some(path))) => {
+                tx.send(UiEvent::Sync(format!(
+                    "Резервная копия: {}",
+                    path.display()
+                )))
+                .ok();
+            }
+            Ok(Ok(None)) => {}
+            Ok(Err(error)) => tracing::warn!(%error, "instance backup failed"),
+            Err(error) => tracing::warn!(%error, "instance backup task failed"),
+        }
+    }
 
     tx.send(UiEvent::Stage("Синхронизация файлов сборки…".to_owned()))
         .ok();
@@ -189,13 +220,9 @@ pub(super) async fn run_pipeline(
         // Reapplies only when the archive fingerprint changed, so user-edited
         // configs survive ordinary launches and the cancellation token reaches
         // the blocking extraction loop.
-        let extracted = extract_overrides_when_changed(
-            &archive,
-            &instance_dir,
-            &managed,
-            Some(Arc::clone(&cancel)),
-        )
-        .await;
+        let extracted =
+            extract_overrides_when_changed(&archive, &instance_dir, &managed, Some(cancel.clone()))
+                .await;
         let written = stage_result(extracted, &cancel, "Распаковка overrides")?;
         let message = match written {
             Some(written) => format!("Overrides: {written} файлов распаковано"),
