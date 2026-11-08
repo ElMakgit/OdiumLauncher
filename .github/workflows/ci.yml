@@ -91,10 +91,14 @@ jobs:
         with:
           name: OdiumLauncher-macos-universal
           path: release
+      - name: Check out the license files
+        uses: actions/checkout@v4
       - name: Publish release assets
         uses: softprops/action-gh-release@v2
         with:
           files: |
             release/OdiumLauncher.exe
             release/OdiumLauncher-macos-universal.dmg
+            LICENSE
+            THIRD-PARTY-NOTICES.md
           generate_release_notes: true

@@ -20,9 +20,16 @@ const FABRIC_META: &str = "https://meta.fabricmc.net/v2/versions/loader";
 const QUILT_META: &str = "https://meta.quiltmc.org/v3/versions/loader";
 const FORGE_MAVEN: &str = "https://maven.minecraftforge.net/net/minecraftforge/forge";
 const NEOFORGE_MAVEN: &str = "https://maven.neoforged.net/releases/net/neoforged/neoforge";
+/// NeoForge 1.20.1 was published as `net.neoforged:forge` with the
+/// `1.20.1-47.x` version; newer releases use `net.neoforged:neoforge`.
+const NEOFORGE_LEGACY_MAVEN: &str = "https://maven.neoforged.net/releases/net/neoforged/forge";
 /// A Forge/NeoForge installer may need to download libraries, but it must never
 /// hang the launch forever when Maven or the network stalls.
 const INSTALLER_TIMEOUT: Duration = Duration::from_secs(300);
+/// A checksum fetch is a tiny request; a couple of retries hide flaky mirrors
+/// without delaying a launch for long.
+const CHECKSUM_ATTEMPTS: u32 = 3;
+const CHECKSUM_RETRY_DELAY: Duration = Duration::from_millis(400);
 
 #[derive(Debug, Error)]
 pub enum LoaderError {
@@ -54,8 +61,8 @@ pub enum LoaderError {
     InstallerCancelled(String),
     #[error("установщик {loader} не завершился за {seconds} с и был остановлен")]
     InstallerTimedOut { loader: String, seconds: u64 },
-    #[error(".sha1 для {0} недоступен; загрузка установщика без проверки отменена")]
-    Sha1Unavailable(String),
+    #[error(".sha1/.sha256 для {0} недоступен; загрузка установщика без проверки отменена")]
+    ChecksumUnavailable(String),
     #[error("профиль загрузчика наследует {actual}, сборка требует {expected}")]
     ProfileMismatch { actual: String, expected: String },
     #[error("установщик {0} не создал version JSON")]
@@ -81,6 +88,11 @@ struct InstallerRequest<'a> {
     java_exe: &'a Path,
     version_id: &'a str,
     cancel: Option<CancelToken>,
+}
+
+struct Checksum {
+    value: String,
+    algo: HashAlgo,
 }
 
 impl LoaderInstaller {
@@ -130,9 +142,13 @@ impl LoaderInstaller {
                 .await?
             }
             LoaderKind::NeoForge => {
-                let url = neoforge_installer_url(&spec.version);
-                let cache = self.installer_cache("neoforge", mc_version, &spec.version);
-                let version_id = format!("neoforge-{}", spec.version);
+                let url = neoforge_installer_url(mc_version, &spec.version);
+                let cache = self.installer_cache(
+                    "neoforge",
+                    mc_version,
+                    neoforge_bare_version(mc_version, &spec.version),
+                );
+                let version_id = neoforge_version_id(mc_version, &spec.version);
                 self.install_with_java(
                     InstallerRequest {
                         loader_name: "NeoForge",
@@ -217,22 +233,27 @@ impl LoaderInstaller {
                         source,
                     })?;
             }
-            // Maven always publishes the .sha1 next to the jar; a missing one
+            // Maven always publishes a digest next to the jar; a missing one
             // means the endpoint is broken or hostile, and silently installing
             // an unverified executable is not an option.
-            let Some(sha1) = fetch_sha1(&self.downloader, url).await else {
+            let Some(checksum) = fetch_checksum(&self.downloader, url).await else {
                 tracing::warn!(
                     url,
                     loader = loader_name,
-                    "installer .sha1 is unavailable; refusing an unverified download"
+                    "installer checksum is unavailable; refusing an unverified download"
                 );
-                return Err(LoaderError::Sha1Unavailable(url.to_owned()));
+                return Err(LoaderError::ChecksumUnavailable(url.to_owned()));
             };
+            tracing::debug!(
+                url,
+                algo = checksum_extension(checksum.algo),
+                "verified installer download"
+            );
             let task = DownloadTask::new(
                 url,
                 cache.to_path_buf(),
-                Some(sha1),
-                HashAlgo::Sha1,
+                Some(checksum.value),
+                checksum.algo,
                 None,
                 format!("{loader_name} installer"),
             );
@@ -397,8 +418,44 @@ pub fn forge_installer_url(mc_version: &str, loader_version: &str) -> String {
     )
 }
 
-pub fn neoforge_installer_url(loader_version: &str) -> String {
-    format!("{NEOFORGE_MAVEN}/{loader_version}/neoforge-{loader_version}-installer.jar")
+/// NeoForge 1.20.1 is published as `net.neoforged:forge`, its version carries
+/// the Minecraft prefix and its installer writes a `forge` profile id.
+fn neoforge_legacy(mc_version: &str, loader_version: &str) -> bool {
+    mc_version == "1.20.1" || loader_version.starts_with("47.")
+}
+
+/// Modrinth packs are inconsistent about the version prefix (`47.1.79` versus
+/// `1.20.1-47.1.79`), so normalize it before building URLs or profile ids.
+fn neoforge_bare_version<'a>(mc_version: &str, loader_version: &'a str) -> &'a str {
+    loader_version
+        .strip_prefix(mc_version)
+        .and_then(|rest| rest.strip_prefix('-'))
+        .unwrap_or(loader_version)
+}
+
+pub fn neoforge_installer_url(mc_version: &str, loader_version: &str) -> String {
+    let version = neoforge_bare_version(mc_version, loader_version);
+    // NeoForge used the Forge coordinates for its 1.20.1 line, and only there
+    // the version carries the Minecraft prefix. Everything newer lives under
+    // `net.neoforged:neoforge` with the plain loader version.
+    if neoforge_legacy(mc_version, version) {
+        format!(
+            "{NEOFORGE_LEGACY_MAVEN}/{mc_version}-{version}/forge-{mc_version}-{version}-installer.jar"
+        )
+    } else {
+        format!("{NEOFORGE_MAVEN}/{version}/neoforge-{version}-installer.jar")
+    }
+}
+
+/// The version folder the NeoForge installer creates. The 1.20.1 installer is
+/// the Forge one and names the profile `1.20.1-forge-47.x`.
+pub fn neoforge_version_id(mc_version: &str, loader_version: &str) -> String {
+    let version = neoforge_bare_version(mc_version, loader_version);
+    if neoforge_legacy(mc_version, version) {
+        format!("{mc_version}-forge-{version}")
+    } else {
+        format!("neoforge-{version}")
+    }
 }
 
 /// A profile that claims another Minecraft base would surface as strange
@@ -557,26 +614,72 @@ fn default_minecraft_versions() -> Option<PathBuf> {
     None
 }
 
-async fn fetch_sha1(downloader: &Downloader, url: &str) -> Option<String> {
-    let response = downloader
-        .client()
-        .get(format!("{url}.sha1"))
-        .send()
-        .await
-        .ok()?
-        .error_for_status()
-        .ok()?;
-    let text = response.text().await.ok()?;
+/// Fetches the checksum sidecar for an installer.
+///
+/// Maven publishes `.sha1` for every artifact; `.sha256` is the fallback for
+/// mirrors that only carry stronger digests. A transient network error is
+/// retried, but a missing checksum still aborts the install: running an
+/// unverified executable is never acceptable.
+async fn fetch_checksum(downloader: &Downloader, url: &str) -> Option<Checksum> {
+    for algo in [HashAlgo::Sha1, HashAlgo::Sha256] {
+        let sidecar = format!("{url}.{}", checksum_extension(algo));
+        for attempt in 0..CHECKSUM_ATTEMPTS {
+            if attempt > 0 {
+                tokio::time::sleep(CHECKSUM_RETRY_DELAY * attempt).await;
+            }
+            match probe_checksum(downloader, &sidecar, algo).await {
+                ChecksumProbe::Found(value) => return Some(Checksum { value, algo }),
+                // A 404 will not heal within a retry; try the next digest.
+                ChecksumProbe::Missing => break,
+                ChecksumProbe::Failed => continue,
+            }
+        }
+    }
+    None
+}
+
+enum ChecksumProbe {
+    Found(String),
+    Missing,
+    Failed,
+}
+
+async fn probe_checksum(downloader: &Downloader, url: &str, algo: HashAlgo) -> ChecksumProbe {
+    let response = match downloader.client().get(url).send().await {
+        Ok(response) => response,
+        Err(_) => return ChecksumProbe::Failed,
+    };
+    // Some mirrors answer 403/429 under load; those are worth another try,
+    // unlike a plain 404.
+    match response.status().as_u16() {
+        404 | 410 => return ChecksumProbe::Missing,
+        status if !(200..300).contains(&status) => return ChecksumProbe::Failed,
+        _ => {}
+    }
+    let Ok(text) = response.text().await else {
+        return ChecksumProbe::Failed;
+    };
+    // Maven sidecars are either a bare digest or `<digest>  <file name>`.
     let hash = text
         .split_whitespace()
         .next()
         .unwrap_or_default()
         .trim()
         .to_ascii_lowercase();
-    if hash.len() == 40 && hash.chars().all(|character| character.is_ascii_hexdigit()) {
-        Some(hash)
+    if hash.len() == algo.hex_len() && hash.chars().all(|character| character.is_ascii_hexdigit()) {
+        ChecksumProbe::Found(hash)
     } else {
-        None
+        // A truncated or HTML body is not a checksum; retrying can help when a
+        // proxy injected an error page.
+        ChecksumProbe::Failed
+    }
+}
+
+fn checksum_extension(algo: HashAlgo) -> &'static str {
+    match algo {
+        HashAlgo::Sha1 => "sha1",
+        HashAlgo::Sha256 => "sha256",
+        HashAlgo::Sha512 => "sha512",
     }
 }
 
@@ -621,8 +724,47 @@ mod tests {
             "https://maven.minecraftforge.net/net/minecraftforge/forge/1.21.1-52.0.28/forge-1.21.1-52.0.28-installer.jar"
         );
         assert_eq!(
-            neoforge_installer_url("21.1.248"),
+            neoforge_installer_url("1.21.1", "21.1.248"),
             "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.248/neoforge-21.1.248-installer.jar"
+        );
+        // NeoForge 1.20.1 lives under the Forge coordinates and its version
+        // carries the Minecraft prefix.
+        assert_eq!(
+            neoforge_installer_url("1.20.1", "47.1.79"),
+            "https://maven.neoforged.net/releases/net/neoforged/forge/1.20.1-47.1.79/forge-1.20.1-47.1.79-installer.jar"
+        );
+        // A 47.x loader version is enough to detect the legacy layout even when
+        // the Minecraft version is passed in an unusual shape.
+        assert_eq!(
+            neoforge_installer_url("1.20.1", "47.1.82"),
+            "https://maven.neoforged.net/releases/net/neoforged/forge/1.20.1-47.1.82/forge-1.20.1-47.1.82-installer.jar"
+        );
+        // Modrinth packs sometimes repeat the Minecraft prefix in the loader
+        // version; it must not be duplicated in the path.
+        assert_eq!(
+            neoforge_installer_url("1.20.1", "1.20.1-47.1.79"),
+            "https://maven.neoforged.net/releases/net/neoforged/forge/1.20.1-47.1.79/forge-1.20.1-47.1.79-installer.jar"
+        );
+        assert_eq!(
+            neoforge_installer_url("1.21.1", "1.21.1-21.1.248"),
+            "https://maven.neoforged.net/releases/net/neoforged/neoforge/21.1.248/neoforge-21.1.248-installer.jar"
+        );
+    }
+
+    #[test]
+    fn neoforge_profile_ids_match_the_installer() {
+        // Verified against the `install_profile.json` shipped inside both jars.
+        assert_eq!(
+            neoforge_version_id("1.21.1", "21.1.248"),
+            "neoforge-21.1.248"
+        );
+        assert_eq!(
+            neoforge_version_id("1.20.1", "47.1.79"),
+            "1.20.1-forge-47.1.79"
+        );
+        assert_eq!(
+            neoforge_version_id("1.20.1", "1.20.1-47.1.79"),
+            "1.20.1-forge-47.1.79"
         );
     }
 
@@ -679,6 +821,27 @@ mod tests {
             find_version_json(&versions, "1.21.1-forge-52.0.28").await,
             Some(exact)
         );
+        Ok(())
+    }
+
+    /// Hits the real Maven repository. Run with `cargo test -p pml-loader
+    /// -- --ignored` when the network path around checksums changes.
+    #[tokio::test]
+    #[ignore = "network test: reaches maven.neoforged.net"]
+    async fn real_neoforge_checksums_are_reachable() -> Result<(), Box<dyn std::error::Error>> {
+        let downloader = Downloader::new(2)?;
+        for (mc_version, loader_version) in [("1.21.1", "21.1.248"), ("1.20.1", "47.1.79")] {
+            let url = neoforge_installer_url(mc_version, loader_version);
+            let checksum = fetch_checksum(&downloader, &url)
+                .await
+                .unwrap_or_else(|| panic!("no checksum for {url}"));
+            assert_eq!(checksum.algo, HashAlgo::Sha1, "{url}");
+            assert_eq!(checksum.value.len(), 40, "{url}");
+            assert!(
+                checksum.value.chars().all(|c| c.is_ascii_hexdigit()),
+                "{url}"
+            );
+        }
         Ok(())
     }
 }

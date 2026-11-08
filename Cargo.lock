@@ -2111,7 +2111,7 @@ dependencies = [
 
 [[package]]
 name = "odium-launcher"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2260,7 +2260,7 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 
 [[package]]
 name = "pml-config"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -2272,7 +2272,7 @@ dependencies = [
 
 [[package]]
 name = "pml-downloader"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "hex",
@@ -2292,7 +2292,7 @@ dependencies = [
 
 [[package]]
 name = "pml-java"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pml-config",
  "pml-downloader",
@@ -2308,7 +2308,7 @@ dependencies = [
 
 [[package]]
 name = "pml-launcher"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pml-minecraft",
  "tempfile",
@@ -2319,7 +2319,7 @@ dependencies = [
 
 [[package]]
 name = "pml-loader"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "pml-config",
  "pml-downloader",
@@ -2334,7 +2334,7 @@ dependencies = [
 
 [[package]]
 name = "pml-minecraft"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "flate2",
  "hex",
@@ -2352,7 +2352,7 @@ dependencies = [
 
 [[package]]
 name = "pml-modpack"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "futures-util",
  "pml-config",
@@ -2369,7 +2369,7 @@ dependencies = [
 
 [[package]]
 name = "pml-publish"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -2388,7 +2388,7 @@ dependencies = [
 
 [[package]]
 name = "pml-theme"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "egui",
  "pml-config",
@@ -2397,7 +2397,7 @@ dependencies = [
 
 [[package]]
 name = "pml-ui"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "eframe",
  "egui",
