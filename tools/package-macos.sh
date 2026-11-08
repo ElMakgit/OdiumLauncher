@@ -69,6 +69,9 @@ cat > "${APP}/Contents/Info.plist" <<PLIST
 </plist>
 PLIST
 
+echo "==> Copying the license"
+cp LICENSE "${APP}/Contents/Resources/LICENSE"
+
 echo "==> Rendering the app icon"
 ICONSET="target/AppIcon.iconset"
 rm -rf "${ICONSET}"
