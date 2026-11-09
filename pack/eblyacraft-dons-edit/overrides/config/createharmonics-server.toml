@@ -1,0 +1,62 @@
+	#.
+	#Mechanical stress impacts and capacities for CreateHarmonics blocks
+	[stressValues.v1]
+
+		#.
+		#.
+		#[in Stress Units]
+		#Configure the individual stress impact of mechanical blocks. Note that this cost is doubled for every speed increase it receives.
+		#Valid range: 0.0 - 1024.0
+		[stressValues.v1.impact]
+			#Default: 1.0 SU
+			# Default: 1.0
+			# Range: 0.0 ~ 1024.0
+			andesite_jukebox = 1.0
+
+		#.
+		#Configuration for ethereal records and their durability
+		[stressValues.v1.records]
+			#.
+			#Maximum uses for STONE record before it breaks. Set to 0 for unbreakable.
+			# Default: 20
+			# Range: 0 ~ 30000
+			maxUses_stone = 20
+			#.
+			#Maximum uses for GOLD record before it breaks. Set to 0 for unbreakable.
+			# Default: 1
+			# Range: 0 ~ 30000
+			maxUses_gold = 1
+			#.
+			#Maximum uses for EMERALD record before it breaks. Set to 0 for unbreakable.
+			# Default: 800
+			# Range: 0 ~ 30000
+			maxUses_emerald = 800
+			#.
+			#Maximum uses for DIAMOND record before it breaks. Set to 0 for unbreakable.
+			# Default: 1500
+			# Range: 0 ~ 30000
+			maxUses_diamond = 1500
+			#.
+			#Maximum uses for NETHERITE record before it breaks. Set to 0 for unbreakable.
+			# Default: 2000
+			# Range: 0 ~ 30000
+			maxUses_netherite = 2000
+			#.
+			#Maximum uses for BRASS record before it breaks. Set to 0 for unbreakable.
+			# Default: 250
+			# Range: 0 ~ 30000
+			maxUses_brass = 250
+			#.
+			#Maximum uses for CREATIVE record before it breaks. Set to 0 for unbreakable.
+			# Default: 0
+			# Range: 0 ~ 30000
+			maxUses_creative = 0
+
+		#.
+		#Configuration for the Andesite Jukebox block
+		[stressValues.v1.jukeboxes]
+			#.
+			#Maximum sound range (in blocks) for the Andesite Jukebox.
+			# Default: 32
+			# Range: 5 ~ 4095
+			maxSoundRange = 32

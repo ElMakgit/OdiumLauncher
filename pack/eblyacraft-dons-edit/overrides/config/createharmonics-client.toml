@@ -1,0 +1,79 @@
+#.
+#Configuration for menu buttons
+[menu_buttons]
+	#.
+	#
+	#Choose the menu row that the Lib Download menu button appears on in the main menu
+	#Set to 0 to disable the button altogether
+	# Default: 2
+	# Range: 0 ~ 4
+	mainMenuLibButtonRow = 2
+	#.
+	#
+	#Offset the Lib Download menu button in the main menu by this many pixels on the X axis
+	#The sign (-/+) of this value determines what side of the row the button appears on (left/right)
+	# Default: -28
+	# Range: > -2147483648
+	mainMenuLibButtonOffsetX = -28
+	#.
+	#
+	#Choose the menu row that the Lib Download menu button appears on in the ingame menu
+	#Set to 0 to disable the button altogether
+	# Default: 3
+	# Range: 0 ~ 5
+	ingameMenuLibButtonRow = 3
+	#.
+	#
+	#Offset the Lib Download menu button in the ingame menu by this many pixels on the X axis
+	#The sign (-/+) of this value determines what side of the row the button appears on (left/right)
+	# Default: -28
+	# Range: > -2147483648
+	ingameMenuLibButtonOffsetX = -28
+
+#.
+#Configuration for audio sources and playback
+[audio_sources]
+	#.
+	#Minimum pitch for audio playback
+	# Default: 0.5
+	# Range: 0.10000000149011612 ~ 1.0
+	minPitch = 0.5
+	#.
+	#Maximum pitch for audio playback
+	# Default: 2.0
+	# Range: 1.0 ~ 4.0
+	maxPitch = 2.0
+	#.
+	#Override arguments for yt-dlp when requesting streaming URLs
+	ytdlpOverrideArgs = ""
+
+#.
+#Configuration for audio effects
+[audio_effects]
+	#.
+	#Radius within which reverberator blocks are detected to adjust the reverb effect.
+	#Beware: higher values will impact performance.
+	# Default: 5
+	# Range: 1 ~ 30
+	reverberatorScanRadius = 5
+
+#.
+#Configuration for external library management
+[library]
+	#.
+	#Never show library installation disclaimer on startup
+	#When enabled, the library installation prompt will not appear on game startup
+	#You can still access the library installer through the in-game menu button
+	neverShowLibraryDisclaimer = false
+
+#.
+#Debug utilities for detecting errors
+[debug]
+	#.
+	#Enables extensive logging for debugging ffmpeg lifecycle
+	#This is useful for reporting bugs and discovering why ffmpeg is failing.
+	debugFFmpeg = false
+	#.
+	#Enables extensive logging for debugging the audio player lifecycle
+	#This is useful for reporting bugs and discovering why the audio player is not working as expected.
+	debugAudioPlayer = false

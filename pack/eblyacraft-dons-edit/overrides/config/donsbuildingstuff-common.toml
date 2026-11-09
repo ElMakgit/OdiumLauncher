@@ -1,0 +1,4 @@
+[trowels]
+	#Trowel controls: new (Palette Editor), old (pre-4.0 inventory controls), or hybrid (both).
+	#Write the value in quotes, for example: TrowelMode = "hybrid".
+	TrowelMode = "new"

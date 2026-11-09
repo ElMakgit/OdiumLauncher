@@ -1,0 +1,125 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/pml-config",
+    "crates/pml-theme",
+    "crates/pml-downloader",
+    "crates/pml-modpack",
+    "crates/pml-minecraft",
+    "crates/pml-loader",
+    "crates/pml-java",
+    "crates/pml-launcher",
+    "crates/pml-publish",
+    "crates/pml-ui",
+]
+
+[workspace.package]
+version = "0.1.5"
+edition = "2021"
+rust-version = "1.82"
+license = "0BSD"
+authors = ["Odium Launcher contributors"]
+repository = "https://github.com/ElMakgit/OdiumLauncher"
+
+[workspace.dependencies]
+anyhow = "1.0"
+thiserror = "2.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.42", features = [
+    "rt-multi-thread",
+    "macros",
+    "fs",
+    "io-util",
+    "process",
+    "sync",
+    "time",
+    "net",
+] }
+reqwest = { version = "0.12", default-features = false, features = [
+    # Native roots keep antivirus and corporate proxy interception working;
+    # the bundled Mozilla store covers Windows versions that no longer receive
+    # root updates (Windows 7 lacks ISRG Root X2, which signs newer CDNs).
+    "rustls-tls-native-roots",
+    "rustls-tls-webpki-roots",
+    "system-proxy",
+    "stream",
+    "json",
+    "gzip",
+    "http2",
+] }
+futures-util = "0.3"
+sha1 = "0.10"
+sha2 = "0.10"
+md-5 = "0.10"
+hex = "0.4"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+zip = { version = "2.2", default-features = false, features = ["deflate"] }
+flate2 = "1.0"
+walkdir = "2.5"
+base64 = "0.22"
+rfd = "0.15"
+egui = "0.29.1"
+eframe = { version = "0.29.1", default-features = false, features = [
+    "glow",
+    "default_fonts",
+] }
+tempfile = "3.14"
+raw-window-handle = "0.6"
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Storage_FileSystem",
+    "Win32_System_LibraryLoader",
+    "Win32_System_SystemInformation",
+    "Win32_UI_Controls",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[package]
+name = "odium-launcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+description = "Odium Launcher: portable, ultra-lightweight Minecraft Java launcher for Windows"
+
+[[bin]]
+name = "OdiumLauncher"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+eframe.workspace = true
+egui.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-appender.workspace = true
+tracing-subscriber.workspace = true
+pml-config = { path = "crates/pml-config" }
+pml-downloader = { path = "crates/pml-downloader" }
+pml-java = { path = "crates/pml-java" }
+pml-launcher = { path = "crates/pml-launcher" }
+pml-loader = { path = "crates/pml-loader" }
+pml-minecraft = { path = "crates/pml-minecraft" }
+pml-modpack = { path = "crates/pml-modpack" }
+pml-theme = { path = "crates/pml-theme" }
+pml-ui = { path = "crates/pml-ui" }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys.workspace = true
+
+[build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+opt-level = "s"
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = true

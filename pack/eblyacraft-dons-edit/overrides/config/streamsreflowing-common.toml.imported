@@ -1,0 +1,85 @@
+[planning]
+	watershedSize = "BLOCKS_768"
+	generateStreams = true
+	fastChunkLoading = true
+	terrainAccuracyLevel = "MEDIUM"
+	riverDrainageSize = 1
+	generateLakes = true
+
+	[planning.where]
+		connectRadius = -1
+		reterraforgedCompat = true
+		outletBiomes = "#minecraft:is_river,#minecraft:is_ocean,#c:is_swamp,#c:is_wet"
+		streamBiomeBlacklist = "terralith:yellowstone,terrestria:caldera,biomeswevegone:crag_gardens"
+		connectNearbyWater = false
+
+[effects]
+	serverStreamParticles = true
+
+#APPEARANCE -- how streams look. These shape the network and channels and do NOT meaningfully
+#affect speed. Anything that changes the network (most of these) applies to NEW chunks only.
+[appearance]
+
+	[appearance.channel]
+		meanderStrength = 1.2
+		widthVariation = 0.5
+		depthFollowsTerrain = 0.5
+		channelBars = 0.5
+		deltaMouths = 0.5
+		baseWidth = 0.4
+		widthScale = 1.0
+		widthFollowsClimate = 0.5
+		widthFollowsSlope = 0.5
+		bendAsymmetry = 0.5
+		bankNoise = 0.21
+		containmentBerm = true
+		streamDepth = 0.24
+		maxWidth = 16.0
+
+	[appearance.network]
+		growDensity = 0.75
+		minLengthScope = 2
+		minStreamLength = 50
+		lakeMaxArea = 0.0
+		wetnessDryFloor = 0.02
+		lakeMinArea = 1024.0
+		wetnessMultiplier = 1.0
+
+	[appearance.banks]
+		bankFeatures = 3
+		biomeBoostPercent = 4
+		floraRadius = 5
+		vegetation = -1
+		allWaterFlora = -1
+		bankGrassPercent = 20
+		biomeBoostBlacklist = ""
+		underwaterFlora = -1
+		underwaterFloraBiomeBlacklist = ""
+		customBanks = true
+		allWaterBanks = -1
+		underwaterFloraPercent = 15
+
+	[appearance.biomes]
+		rebiomeLakes = 1
+		rebiomeStreams = 1
+
+[behavior]
+	boatsFloatOnFlowingWater = true
+	spillOverWater = true
+	spillOnStreamsOnly = true
+	vesselDriftSpeed = 30.0
+	waterMobsIgnoreFlow = true
+	mobsDriftInCurrent = ""
+	flowVanillaRivers = true
+	itemDriftSpeed = 1.5
+	vanillaWaterFlow = true
+	mobsHoldInCurrent = ""
+	riverSeamAgreement = true
+
+	[behavior.otherMods]
+		forceBakedFluid = false
+		physicsModWater = 1
+		bakedFluidWhenFlowingFluids = true
+
+[misc]
+	welcomeMessage = true

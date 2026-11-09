@@ -1,0 +1,4 @@
+#Send package automatically when you click transfer craft recipe
+SendPackage = false
+#Craftable recipe send by Create's crafting package format
+SendByCraftableRecipe = true

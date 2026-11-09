@@ -1,0 +1,16 @@
+[package]
+name = "pml-launcher"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "JVM process construction, logging and exit-code supervision"
+
+[dependencies]
+pml-minecraft = { path = "../pml-minecraft" }
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

@@ -1,0 +1,128 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Repository hygiene
+        shell: powershell
+        run: ./tools/Check-RepoHygiene.ps1
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Formatting
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: Tests
+        run: cargo test --workspace
+
+  check-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: System dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libgtk-3-dev libxkbcommon-dev libwayland-dev \
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev
+      - name: Check
+        run: cargo check --workspace --all-targets
+
+  build-windows:
+    needs: [check, check-linux]
+    # A tag that is not a launcher version (for example the `neoforge-mirror`
+    # asset storage) must not rebuild or publish binaries.
+    if: "startsWith(github.ref, 'refs/tags/v') || !startsWith(github.ref, 'refs/tags/')"
+    runs-on: windows-latest
+    env:
+      # The archives are compiled into the executable; a release build without
+      # them would silently lose its offline mode.
+      ODIUM_BUNDLES: require
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch the offline NeoForge bundles
+        shell: powershell
+        run: ./tools/fetch-offline-bundles.ps1
+      - name: Build release executable
+        run: cargo build --release
+      - name: Upload executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: OdiumLauncher-windows-x64
+          path: target/release/OdiumLauncher.exe
+          if-no-files-found: error
+
+  build-macos:
+    needs: [check, check-linux]
+    if: "startsWith(github.ref, 'refs/tags/v') || !startsWith(github.ref, 'refs/tags/')"
+    runs-on: macos-latest
+    env:
+      ODIUM_BUNDLES: require
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Fetch the offline NeoForge bundles
+        run: |
+          set -euo pipefail
+          mkdir -p dist/neoforge-mirror
+          base="https://github.com/ElMakgit/OdiumLauncher/releases/download/neoforge-mirror"
+          for file in neoforge-21.1.248-offline.zip neoforge-1.20.1-47.1.79-offline.zip; do
+            curl -fsSL --retry 3 --retry-all-errors \
+              -o "dist/neoforge-mirror/${file}" "${base}/${file}"
+          done
+          ls -l dist/neoforge-mirror
+      - name: Build and package the macOS app
+        run: bash tools/package-macos.sh
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: OdiumLauncher-macos-universal
+          path: dist/OdiumLauncher-macos-universal.dmg
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Checkout first: it cleans the workspace, which would delete artifacts
+      # that were downloaded before it.
+      - uses: actions/checkout@v4
+      - name: Download the Windows executable
+        uses: actions/download-artifact@v4
+        with:
+          name: OdiumLauncher-windows-x64
+          path: release
+      - name: Download the macOS DMG
+        uses: actions/download-artifact@v4
+        with:
+          name: OdiumLauncher-macos-universal
+          path: release
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            release/OdiumLauncher.exe
+            release/OdiumLauncher-macos-universal.dmg
+            LICENSE
+            THIRD-PARTY-NOTICES.md
+          generate_release_notes: true

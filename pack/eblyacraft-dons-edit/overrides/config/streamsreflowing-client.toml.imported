@@ -1,0 +1,14 @@
+[sound]
+	waterAmbience = 1.0
+
+[particles]
+	streamBubbles = 2
+	streamDebris = true
+	particleSize = 1.0
+	streamParticleScanRadius = 256
+	particleDensity = 1.0
+	maxStreamParticlesPerTick = 1000
+	particlesOnVanillaWater = true
+
+[misc]
+	loadingNotice = true

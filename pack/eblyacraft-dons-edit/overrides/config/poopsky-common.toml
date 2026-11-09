@@ -1,0 +1,29 @@
+[world]
+	#Whether the dedicated server level-type default should be set to poopsky
+	setPoopskyDefault = true
+	#Whether the custom void generator should also keep the nether empty
+	voidNetherGeneration = true
+	#Which toilet to generate at the PoopSky spawn point.
+	#Allowed values: WOODEN_TOILET, SKY_FLUSH_TOILET, RANDOM_TOILET
+	#Allowed Values: WOODEN_TOILET, SKY_FLUSH_TOILET, RANDOM_TOILET
+	spawnToiletMode = "WOODEN_TOILET"
+	#Whether to Enable the Desperate World (Enabling it will cause the device to lag)
+	desperateWorld = false
+	#Whether to Disable the underground lava lake
+	lavaFluid = true
+
+[crafting]
+	#Whether to Disable the consumption of liquid when sticks crafting
+	compooperCrafting = false
+
+[trades]
+	#Whether to Disable the plug trades
+	plugTrades = false
+	#Whether to Disable the upgrade template trades
+	upgradeTemplate = false
+
+[timeStop]
+	#Whether to Enable the unlimited freeze
+	unlimitedFreeze = false
+	#Whether to Disable the freeze filter
+	freezeFilter = true

@@ -1,0 +1,14 @@
+{
+  "_comment": "SkyGrid Config — mode: whitelist (only listed blocks spawn) or blacklist (all except listed). Each entry is either a plain block ID string (weight 1) or {\"id\": \"...\", \"weight\": N}.",
+  "mode": "whitelist",
+  "whitelist": [
+    "minecraft:end_stone",
+    "minecraft:end_stone_bricks",
+    "minecraft:obsidian",
+    "minecraft:purpur_block",
+    "minecraft:purpur_pillar",
+    "minecraft:chorus_plant",
+    "minecraft:chorus_flower",
+    "draconicevolution:draconium_ore"
+  ]
+}

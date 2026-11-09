@@ -1,0 +1,21 @@
+[package]
+name = "pml-java"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Java 21 discovery and cached Temurin 21 download from Adoptium"
+
+[dependencies]
+pml-config = { path = "../pml-config" }
+pml-downloader = { path = "../pml-downloader" }
+reqwest.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

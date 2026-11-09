@@ -1,0 +1,1056 @@
+{
+  "presets": [
+    {
+      "helmetOpacity": 0.0,
+      "chestOpacity": 0.15,
+      "legsOpacity": 0.15,
+      "bootsOpacity": 0.15,
+      "offHandOpacity": 1.0,
+      "helmetGlint": true,
+      "chestGlint": true,
+      "legsGlint": true,
+      "bootsGlint": true,
+      "opacityAffectingHatOrSkull": true,
+      "opacityAffectingElytra": true,
+      "elytraOpacity": 0.0,
+      "elytraGlint": true,
+      "elytraInFlight": true,
+      "enableCombatDetection": false,
+      "inCombatUseDefaultModel": false,
+      "hiddenModelBehaviour": "KEEP",
+      "exclusionItems": {
+        "items": {
+          "HEAD": {
+            "minecraft:leather_helmet": {
+              "displayName": "Leather Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_helmet": {
+              "displayName": "Chainmail Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_helmet": {
+              "displayName": "Iron Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_helmet": {
+              "displayName": "Golden Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_helmet": {
+              "displayName": "Diamond Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_helmet": {
+              "displayName": "Netherite Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:turtle_helmet": {
+              "displayName": "Turtle Helmet",
+              "shouldIgnore": false
+            },
+            "create:goggles": {
+              "displayName": "Инженерные очки",
+              "shouldIgnore": false
+            }
+          },
+          "CHEST": {
+            "minecraft:leather_chestplate": {
+              "displayName": "Leather Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_chestplate": {
+              "displayName": "Chainmail Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_chestplate": {
+              "displayName": "Iron Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_chestplate": {
+              "displayName": "Golden Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_chestplate": {
+              "displayName": "Diamond Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_chestplate": {
+              "displayName": "Netherite Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:elytra": {
+              "displayName": "Elytra",
+              "shouldIgnore": false
+            },
+            "create_ironworks:brass_armor_chestplate": {
+              "displayName": "Латунный нагрудник",
+              "shouldIgnore": false
+            },
+            "create_ironworks:steel_armor_chestplate": {
+              "displayName": "Стальной нагрудник",
+              "shouldIgnore": false
+            }
+          },
+          "LEGS": {
+            "minecraft:leather_leggings": {
+              "displayName": "Leather Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_leggings": {
+              "displayName": "Chainmail Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_leggings": {
+              "displayName": "Iron Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_leggings": {
+              "displayName": "Golden Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_leggings": {
+              "displayName": "Diamond Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_leggings": {
+              "displayName": "Netherite Leggings",
+              "shouldIgnore": false
+            },
+            "create_ironworks:brass_armor_leggings": {
+              "displayName": "Латунные поножи",
+              "shouldIgnore": false
+            },
+            "create_ironworks:steel_armor_leggings": {
+              "displayName": "Стальные поножи",
+              "shouldIgnore": false
+            }
+          },
+          "FEET": {
+            "minecraft:leather_boots": {
+              "displayName": "Leather Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_boots": {
+              "displayName": "Chainmail Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_boots": {
+              "displayName": "Iron Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_boots": {
+              "displayName": "Golden Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_boots": {
+              "displayName": "Diamond Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_boots": {
+              "displayName": "Netherite Boots",
+              "shouldIgnore": false
+            },
+            "create_ironworks:brass_armor_boots": {
+              "displayName": "Латунные ботинки",
+              "shouldIgnore": false
+            },
+            "create_ironworks:steel_armor_boots": {
+              "displayName": "Стальные ботинки",
+              "shouldIgnore": false
+            }
+          },
+          "OFFHAND": {
+            "minecraft:shield": {
+              "displayName": "Shield",
+              "shouldIgnore": false
+            },
+            "minecraft:lever": {
+              "displayName": "Рычаг",
+              "shouldIgnore": false
+            }
+          },
+          "MAINHAND": {
+            "minecraft:lever": {
+              "displayName": "Рычаг",
+              "shouldIgnore": false
+            },
+            "create_ironworks:brass_paxel": {
+              "displayName": "Латунный Паксель",
+              "shouldIgnore": false
+            },
+            "minecraft:bread": {
+              "displayName": "Хлеб",
+              "shouldIgnore": false
+            },
+            "create:factory_gauge": {
+              "displayName": "Фабричный контроллер",
+              "shouldIgnore": false
+            },
+            "create:cardboard_package_12x12": {
+              "displayName": "Картонная коробка",
+              "shouldIgnore": false
+            },
+            "create:shaft": {
+              "displayName": "Вал",
+              "shouldIgnore": false
+            },
+            "create:wrench": {
+              "displayName": "Гаечный ключ",
+              "shouldIgnore": false
+            },
+            "create_connected:inventory_bridge": {
+              "displayName": "Складское звено",
+              "shouldIgnore": false
+            },
+            "create:cardboard_package_12x10": {
+              "displayName": "Картонная коробка",
+              "shouldIgnore": false
+            },
+            "colored_packages:colored_package_12x12": {
+              "displayName": "Картонная коробка",
+              "shouldIgnore": false
+            },
+            "colored_packages:colored_package_12x10": {
+              "displayName": "Картонная коробка",
+              "shouldIgnore": false
+            },
+            "colored_packages:colored_package_10x12": {
+              "displayName": "Картонная коробка",
+              "shouldIgnore": false
+            },
+            "colored_packages:colored_package_10x8": {
+              "displayName": "Картонная коробка",
+              "shouldIgnore": false
+            },
+            "minecraft:spruce_log": {
+              "displayName": "Еловое бревно",
+              "shouldIgnore": false
+            },
+            "minecraft:bricks": {
+              "displayName": "Кирпичи",
+              "shouldIgnore": false
+            },
+            "create:stockpile_switch": {
+              "displayName": "Пороговый переключатель",
+              "shouldIgnore": false
+            },
+            "create:brass_funnel": {
+              "displayName": "Латунный шлюз",
+              "shouldIgnore": false
+            },
+            "create:chain_conveyor": {
+              "displayName": "Цепной конвейер",
+              "shouldIgnore": false
+            },
+            "minecraft:chain": {
+              "displayName": "Цепь",
+              "shouldIgnore": false
+            },
+            "create:redstone_link": {
+              "displayName": "Редстоуновый передатчик сигнала",
+              "shouldIgnore": false
+            },
+            "create:andesite_casing": {
+              "displayName": "Андезитовый корпус",
+              "shouldIgnore": false
+            },
+            "create_connected:item_silo": {
+              "displayName": "Силос предметов",
+              "shouldIgnore": false
+            },
+            "minecraft:spruce_planks": {
+              "displayName": "Еловые доски",
+              "shouldIgnore": false
+            },
+            "minecraft:dirt": {
+              "displayName": "Земля",
+              "shouldIgnore": false
+            },
+            "minecraft:brick": {
+              "displayName": "Кирпич",
+              "shouldIgnore": false
+            },
+            "create:cardboard_package_10x12": {
+              "displayName": "Картонная коробка",
+              "shouldIgnore": false
+            },
+            "create:cardboard_package_10x8": {
+              "displayName": "Картонная коробка",
+              "shouldIgnore": false
+            },
+            "minecraft:deepslate_tiles": {
+              "displayName": "Глубинносланцевый плитняк",
+              "shouldIgnore": false
+            },
+            "minecraft:chest": {
+              "displayName": "Сундук",
+              "shouldIgnore": false
+            },
+            "storagedrawers:spruce_full_drawers_1": {
+              "displayName": "Ящик 1x1 из ели",
+              "shouldIgnore": false
+            },
+            "minecraft:barrel": {
+              "displayName": "Бочка",
+              "shouldIgnore": false
+            },
+            "create:iron_sheet": {
+              "displayName": "Железный лист",
+              "shouldIgnore": false
+            },
+            "minecraft:coal": {
+              "displayName": "Уголь",
+              "shouldIgnore": false
+            },
+            "create:large_cogwheel": {
+              "displayName": "Большая шестерня",
+              "shouldIgnore": false
+            },
+            "create:andesite_alloy": {
+              "displayName": "Андезитовый сплав",
+              "shouldIgnore": false
+            },
+            "create:cogwheel": {
+              "displayName": "Шестерня",
+              "shouldIgnore": false
+            },
+            "minecraft:spruce_slab": {
+              "displayName": "Еловая плита",
+              "shouldIgnore": false
+            },
+            "minecraft:spruce_button": {
+              "displayName": "Еловая кнопка",
+              "shouldIgnore": false
+            },
+            "minecraft:sand": {
+              "displayName": "Песок",
+              "shouldIgnore": false
+            },
+            "minecraft:cooked_mutton": {
+              "displayName": "Жареная баранина",
+              "shouldIgnore": false
+            },
+            "dndesires:smart_hopper": {
+              "displayName": "Умная воронка",
+              "shouldIgnore": false
+            },
+            "create_sa:zinc_pickaxe": {
+              "displayName": "Цинковая кирка",
+              "shouldIgnore": false
+            },
+            "minecraft:spruce_fence": {
+              "displayName": "Еловый забор",
+              "shouldIgnore": false
+            },
+            "create:fluid_pipe": {
+              "displayName": "Жидкостная труба",
+              "shouldIgnore": false
+            },
+            "tfmg:flarestack": {
+              "displayName": "Факельная труба",
+              "shouldIgnore": false
+            },
+            "create:schematic_and_quill": {
+              "displayName": "Схематика и перо",
+              "shouldIgnore": false
+            },
+            "minecraft:gray_concrete": {
+              "displayName": "Серый бетон",
+              "shouldIgnore": false
+            },
+            "create:schematic": {
+              "displayName": "Схематика",
+              "shouldIgnore": false
+            },
+            "create:clipboard": {
+              "displayName": "Список материалов",
+              "shouldIgnore": false
+            },
+            "create:schematicannon": {
+              "displayName": "Строительная пушка",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_ingot": {
+              "displayName": "Железный слиток",
+              "shouldIgnore": false
+            },
+            "create:filter": {
+              "displayName": "Фильтр предметов",
+              "shouldIgnore": false
+            },
+            "minecraft:gray_dye": {
+              "displayName": "Серый краситель",
+              "shouldIgnore": false
+            },
+            "create_vibrant_vaults:gray_vertical_shipping_container": {
+              "displayName": "Gray Vertical Shipping Container",
+              "shouldIgnore": false
+            },
+            "sophisticatedbackpacks:diamond_backpack": {
+              "displayName": "Алмазный рюкзак",
+              "shouldIgnore": false
+            },
+            "create:empty_schematic": {
+              "displayName": "Пустая схематика",
+              "shouldIgnore": false
+            },
+            "minecraft:cooked_porkchop": {
+              "displayName": "Жареная свинина",
+              "shouldIgnore": false
+            },
+            "create:package_frogport": {
+              "displayName": "Квакопорт",
+              "shouldIgnore": false
+            },
+            "ratatouille:thresher": {
+              "displayName": "Молотилка",
+              "shouldIgnore": false
+            },
+            "createaddition:rolling_mill": {
+              "displayName": "Прокатный стан",
+              "shouldIgnore": false
+            },
+            "create:andesite_funnel": {
+              "displayName": "Андезитовый шлюз",
+              "shouldIgnore": false
+            },
+            "sophisticatedstorage:copper_barrel": {
+              "displayName": "Медная бочка из ели",
+              "shouldIgnore": false
+            },
+            "ratatouille:wheat_kernels": {
+              "displayName": "Ядра пшеницы",
+              "shouldIgnore": false
+            },
+            "create:wheat_flour": {
+              "displayName": "Пшеничная мука",
+              "shouldIgnore": false
+            },
+            "minecraft:hopper": {
+              "displayName": "Воронка",
+              "shouldIgnore": false
+            },
+            "create:dough": {
+              "displayName": "Пшеничное тесто",
+              "shouldIgnore": false
+            },
+            "createfood:dumpling_wrappers": {
+              "displayName": "Обёртки для пельменей",
+              "shouldIgnore": false
+            },
+            "minecraft:torch": {
+              "displayName": "Факел",
+              "shouldIgnore": false
+            },
+            "create:item_vault": {
+              "displayName": "Хранилище предметов",
+              "shouldIgnore": false
+            },
+            "tfmg:cast_iron_frame": {
+              "displayName": "Чугунный каркас",
+              "shouldIgnore": false
+            },
+            "tfmg:cast_iron_truss": {
+              "displayName": "Чугунные балки",
+              "shouldIgnore": false
+            },
+            "minecraft:redstone_block": {
+              "displayName": "Редстоуновый блок",
+              "shouldIgnore": false
+            },
+            "createnuclear:steel_ingot": {
+              "displayName": "Стальной слиток",
+              "shouldIgnore": false
+            },
+            "create_ironworks:brass_armor_leggings": {
+              "displayName": "Латунные поножи",
+              "shouldIgnore": false
+            },
+            "create:metal_girder": {
+              "displayName": "Металлическая балка",
+              "shouldIgnore": false
+            },
+            "create:industrial_iron_block": {
+              "displayName": "Блок промышленного железа",
+              "shouldIgnore": false
+            },
+            "create_ironworks:steel_hammer": {
+              "displayName": "Стальной молот",
+              "shouldIgnore": false
+            },
+            "create_ironworks:steel_paxel": {
+              "displayName": "Стальной Паксель",
+              "shouldIgnore": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "helmetOpacity": 0.2,
+      "chestOpacity": 0.2,
+      "legsOpacity": 0.2,
+      "bootsOpacity": 0.2,
+      "offHandOpacity": 0.2,
+      "helmetGlint": true,
+      "chestGlint": true,
+      "legsGlint": true,
+      "bootsGlint": true,
+      "opacityAffectingHatOrSkull": true,
+      "opacityAffectingElytra": true,
+      "elytraOpacity": 0.2,
+      "elytraGlint": true,
+      "elytraInFlight": true,
+      "enableCombatDetection": false,
+      "inCombatUseDefaultModel": false,
+      "hiddenModelBehaviour": "KEEP",
+      "exclusionItems": {
+        "items": {
+          "HEAD": {
+            "minecraft:leather_helmet": {
+              "displayName": "Leather Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_helmet": {
+              "displayName": "Chainmail Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_helmet": {
+              "displayName": "Iron Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_helmet": {
+              "displayName": "Golden Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_helmet": {
+              "displayName": "Diamond Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_helmet": {
+              "displayName": "Netherite Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:turtle_helmet": {
+              "displayName": "Turtle Helmet",
+              "shouldIgnore": false
+            }
+          },
+          "CHEST": {
+            "minecraft:leather_chestplate": {
+              "displayName": "Leather Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_chestplate": {
+              "displayName": "Chainmail Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_chestplate": {
+              "displayName": "Iron Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_chestplate": {
+              "displayName": "Golden Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_chestplate": {
+              "displayName": "Diamond Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_chestplate": {
+              "displayName": "Netherite Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:elytra": {
+              "displayName": "Elytra",
+              "shouldIgnore": false
+            }
+          },
+          "LEGS": {
+            "minecraft:leather_leggings": {
+              "displayName": "Leather Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_leggings": {
+              "displayName": "Chainmail Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_leggings": {
+              "displayName": "Iron Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_leggings": {
+              "displayName": "Golden Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_leggings": {
+              "displayName": "Diamond Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_leggings": {
+              "displayName": "Netherite Leggings",
+              "shouldIgnore": false
+            }
+          },
+          "FEET": {
+            "minecraft:leather_boots": {
+              "displayName": "Leather Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_boots": {
+              "displayName": "Chainmail Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_boots": {
+              "displayName": "Iron Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_boots": {
+              "displayName": "Golden Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_boots": {
+              "displayName": "Diamond Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_boots": {
+              "displayName": "Netherite Boots",
+              "shouldIgnore": false
+            }
+          },
+          "OFFHAND": {
+            "minecraft:shield": {
+              "displayName": "Shield",
+              "shouldIgnore": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "helmetOpacity": 0.4,
+      "chestOpacity": 0.4,
+      "legsOpacity": 0.4,
+      "bootsOpacity": 0.4,
+      "offHandOpacity": 0.4,
+      "helmetGlint": true,
+      "chestGlint": true,
+      "legsGlint": true,
+      "bootsGlint": true,
+      "opacityAffectingHatOrSkull": true,
+      "opacityAffectingElytra": true,
+      "elytraOpacity": 0.4,
+      "elytraGlint": true,
+      "elytraInFlight": true,
+      "enableCombatDetection": false,
+      "inCombatUseDefaultModel": false,
+      "hiddenModelBehaviour": "KEEP",
+      "exclusionItems": {
+        "items": {
+          "HEAD": {
+            "minecraft:leather_helmet": {
+              "displayName": "Leather Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_helmet": {
+              "displayName": "Chainmail Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_helmet": {
+              "displayName": "Iron Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_helmet": {
+              "displayName": "Golden Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_helmet": {
+              "displayName": "Diamond Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_helmet": {
+              "displayName": "Netherite Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:turtle_helmet": {
+              "displayName": "Turtle Helmet",
+              "shouldIgnore": false
+            }
+          },
+          "CHEST": {
+            "minecraft:leather_chestplate": {
+              "displayName": "Leather Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_chestplate": {
+              "displayName": "Chainmail Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_chestplate": {
+              "displayName": "Iron Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_chestplate": {
+              "displayName": "Golden Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_chestplate": {
+              "displayName": "Diamond Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_chestplate": {
+              "displayName": "Netherite Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:elytra": {
+              "displayName": "Elytra",
+              "shouldIgnore": false
+            }
+          },
+          "LEGS": {
+            "minecraft:leather_leggings": {
+              "displayName": "Leather Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_leggings": {
+              "displayName": "Chainmail Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_leggings": {
+              "displayName": "Iron Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_leggings": {
+              "displayName": "Golden Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_leggings": {
+              "displayName": "Diamond Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_leggings": {
+              "displayName": "Netherite Leggings",
+              "shouldIgnore": false
+            }
+          },
+          "FEET": {
+            "minecraft:leather_boots": {
+              "displayName": "Leather Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_boots": {
+              "displayName": "Chainmail Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_boots": {
+              "displayName": "Iron Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_boots": {
+              "displayName": "Golden Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_boots": {
+              "displayName": "Diamond Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_boots": {
+              "displayName": "Netherite Boots",
+              "shouldIgnore": false
+            }
+          },
+          "OFFHAND": {
+            "minecraft:shield": {
+              "displayName": "Shield",
+              "shouldIgnore": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "helmetOpacity": 0.6,
+      "chestOpacity": 0.6,
+      "legsOpacity": 0.6,
+      "bootsOpacity": 0.6,
+      "offHandOpacity": 0.6,
+      "helmetGlint": true,
+      "chestGlint": true,
+      "legsGlint": true,
+      "bootsGlint": true,
+      "opacityAffectingHatOrSkull": true,
+      "opacityAffectingElytra": true,
+      "elytraOpacity": 0.6,
+      "elytraGlint": true,
+      "elytraInFlight": true,
+      "enableCombatDetection": false,
+      "inCombatUseDefaultModel": false,
+      "hiddenModelBehaviour": "KEEP",
+      "exclusionItems": {
+        "items": {
+          "HEAD": {
+            "minecraft:leather_helmet": {
+              "displayName": "Leather Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_helmet": {
+              "displayName": "Chainmail Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_helmet": {
+              "displayName": "Iron Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_helmet": {
+              "displayName": "Golden Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_helmet": {
+              "displayName": "Diamond Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_helmet": {
+              "displayName": "Netherite Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:turtle_helmet": {
+              "displayName": "Turtle Helmet",
+              "shouldIgnore": false
+            }
+          },
+          "CHEST": {
+            "minecraft:leather_chestplate": {
+              "displayName": "Leather Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_chestplate": {
+              "displayName": "Chainmail Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_chestplate": {
+              "displayName": "Iron Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_chestplate": {
+              "displayName": "Golden Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_chestplate": {
+              "displayName": "Diamond Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_chestplate": {
+              "displayName": "Netherite Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:elytra": {
+              "displayName": "Elytra",
+              "shouldIgnore": false
+            }
+          },
+          "LEGS": {
+            "minecraft:leather_leggings": {
+              "displayName": "Leather Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_leggings": {
+              "displayName": "Chainmail Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_leggings": {
+              "displayName": "Iron Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_leggings": {
+              "displayName": "Golden Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_leggings": {
+              "displayName": "Diamond Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_leggings": {
+              "displayName": "Netherite Leggings",
+              "shouldIgnore": false
+            }
+          },
+          "FEET": {
+            "minecraft:leather_boots": {
+              "displayName": "Leather Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_boots": {
+              "displayName": "Chainmail Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_boots": {
+              "displayName": "Iron Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_boots": {
+              "displayName": "Golden Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_boots": {
+              "displayName": "Diamond Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_boots": {
+              "displayName": "Netherite Boots",
+              "shouldIgnore": false
+            }
+          },
+          "OFFHAND": {
+            "minecraft:shield": {
+              "displayName": "Shield",
+              "shouldIgnore": false
+            }
+          }
+        }
+      }
+    },
+    {
+      "helmetOpacity": 0.8,
+      "chestOpacity": 0.8,
+      "legsOpacity": 0.8,
+      "bootsOpacity": 0.8,
+      "offHandOpacity": 0.8,
+      "helmetGlint": true,
+      "chestGlint": true,
+      "legsGlint": true,
+      "bootsGlint": true,
+      "opacityAffectingHatOrSkull": true,
+      "opacityAffectingElytra": true,
+      "elytraOpacity": 0.8,
+      "elytraGlint": true,
+      "elytraInFlight": true,
+      "enableCombatDetection": false,
+      "inCombatUseDefaultModel": false,
+      "hiddenModelBehaviour": "KEEP",
+      "exclusionItems": {
+        "items": {
+          "HEAD": {
+            "minecraft:leather_helmet": {
+              "displayName": "Leather Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_helmet": {
+              "displayName": "Chainmail Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_helmet": {
+              "displayName": "Iron Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_helmet": {
+              "displayName": "Golden Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_helmet": {
+              "displayName": "Diamond Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_helmet": {
+              "displayName": "Netherite Helmet",
+              "shouldIgnore": false
+            },
+            "minecraft:turtle_helmet": {
+              "displayName": "Turtle Helmet",
+              "shouldIgnore": false
+            }
+          },
+          "CHEST": {
+            "minecraft:leather_chestplate": {
+              "displayName": "Leather Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_chestplate": {
+              "displayName": "Chainmail Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_chestplate": {
+              "displayName": "Iron Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_chestplate": {
+              "displayName": "Golden Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_chestplate": {
+              "displayName": "Diamond Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_chestplate": {
+              "displayName": "Netherite Chestplate",
+              "shouldIgnore": false
+            },
+            "minecraft:elytra": {
+              "displayName": "Elytra",
+              "shouldIgnore": false
+            }
+          },
+          "LEGS": {
+            "minecraft:leather_leggings": {
+              "displayName": "Leather Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_leggings": {
+              "displayName": "Chainmail Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_leggings": {
+              "displayName": "Iron Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_leggings": {
+              "displayName": "Golden Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_leggings": {
+              "displayName": "Diamond Leggings",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_leggings": {
+              "displayName": "Netherite Leggings",
+              "shouldIgnore": false
+            }
+          },
+          "FEET": {
+            "minecraft:leather_boots": {
+              "displayName": "Leather Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:chainmail_boots": {
+              "displayName": "Chainmail Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:iron_boots": {
+              "displayName": "Iron Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:golden_boots": {
+              "displayName": "Golden Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:diamond_boots": {
+              "displayName": "Diamond Boots",
+              "shouldIgnore": false
+            },
+            "minecraft:netherite_boots": {
+              "displayName": "Netherite Boots",
+              "shouldIgnore": false
+            }
+          },
+          "OFFHAND": {
+            "minecraft:shield": {
+              "displayName": "Shield",
+              "shouldIgnore": false
+            }
+          }
+        }
+      }
+    }
+  ],
+  "activeIndex": 0
+}
