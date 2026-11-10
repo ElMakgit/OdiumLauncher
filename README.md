@@ -1,5 +1,10 @@
 # Odium Launcher (PortableMC)
 
+[![Скачать](https://img.shields.io/github/v/release/ElMakgit/OdiumLauncher?label=download)](https://github.com/ElMakgit/OdiumLauncher/releases/latest)
+[![Лицензия](https://img.shields.io/badge/license-0BSD-blue)](LICENSE)
+[![Windows](https://img.shields.io/badge/Windows-10%2F11-0078d4)](#скачать)
+[![macOS](https://img.shields.io/badge/macOS-11%2B-lightgrey)](#скачать)
+
 Портативный лаунчер Minecraft Java для Windows и macOS. По умолчанию данные
 хранятся в `%LOCALAPPDATA%\OdiumLauncher` (на macOS — в
 `~/Library/Application Support/OdiumLauncher`), а `portable.flag` рядом с `.exe`
@@ -8,6 +13,10 @@
 или скачивает подходящую Java (8/17/21 в зависимости от версии Minecraft), ставит
 Fabric/Quilt или Forge/NeoForge, синхронизирует модпак, добавляет сервер в
 список и запускает игру.
+
+| Windows 98 | Windows 11 |
+|---|---|
+| ![Окно лаунчера в теме Windows 98](docs/screenshot-win98.png) | ![Окно лаунчера в теме Windows 11](docs/screenshot-win11.png) |
 
 ## Возможности
 
@@ -47,6 +56,28 @@ Fabric/Quilt или Forge/NeoForge, синхронизирует модпак, �
   `spawn_blocking`, системные шрифты читаются один раз и переиспользуются при
   смене темы.
 - Релизы сопровождаются файлами `.sha256` для exe и DMG.
+
+## Скачать
+
+Готовые сборки — на странице [релизов](https://github.com/ElMakgit/OdiumLauncher/releases/latest):
+
+| Файл | Что это |
+|---|---|
+| `OdiumLauncher.exe` | портативный лаунчер для Windows 10/11, установка не нужна |
+| `OdiumLauncher-macos-universal.dmg` | приложение для macOS 11+ (Intel и Apple Silicon) |
+| `*.sha256` | контрольная сумма рядом с каждым файлом |
+| `THIRD-PARTY-NOTICES.md`, `LICENSE` | лицензии зависимостей и самого проекта (0BSD) |
+
+Проверить скачанное можно так:
+
+```powershell
+(Get-FileHash -Algorithm SHA256 .\OdiumLauncher.exe).Hash.ToLower() -eq `
+  (Get-Content .\OdiumLauncher.exe.sha256 -Raw).Trim()
+```
+
+Лаунчер не ставится в систему: exe запускается с рабочего стола, с флешки или
+из любой папки. Данные по умолчанию лежат в `%LOCALAPPDATA%\OdiumLauncher`
+(см. «Запуск и хранение данных»).
 
 ## Сборка
 
