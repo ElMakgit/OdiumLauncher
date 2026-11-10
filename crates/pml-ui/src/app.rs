@@ -719,10 +719,23 @@ impl LauncherApp {
         if let Some(mut receiver) = self.manifest_rx.take() {
             match receiver.try_recv() {
                 Ok(Ok(manifest)) => {
+                    let previous = self
+                        .manifest
+                        .as_ref()
+                        .map(|manifest| manifest.version.clone());
+                    let version = manifest.version.clone();
                     self.set_manifest(Some(manifest));
                     self.manifest_error = None;
-                    if !self.busy {
-                        self.status = "Готов к запуску".to_owned();
+                    if !self.busy && !self.game_running {
+                        self.status = match previous {
+                            Some(previous) if !version.is_empty() && previous != version => {
+                                format!("Доступна новая сборка {version}")
+                            }
+                            Some(_) if !version.is_empty() => {
+                                format!("Сборка {version} актуальна")
+                            }
+                            _ => "Готов к запуску".to_owned(),
+                        };
                     }
                 }
                 Ok(Err(error)) => {

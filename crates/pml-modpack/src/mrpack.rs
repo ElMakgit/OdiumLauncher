@@ -168,12 +168,22 @@ impl MrpackIndex {
     }
 }
 
-#[derive(Debug, Deserialize, serde::Serialize)]
+#[derive(Debug, Default, Deserialize, serde::Serialize)]
 struct CacheMeta {
     #[serde(default)]
     etag: Option<String>,
     #[serde(default)]
     last_modified: Option<String>,
+    /// Logical source that produced this archive. A GitHub repository keeps
+    /// the same cache file while its newest `.mrpack` changes, so the download
+    /// URL alone is not a stable key.
+    #[serde(default)]
+    source_url: Option<String>,
+    /// GitHub blob SHA or release asset identity. When it changes, conditional
+    /// headers must be dropped: reusing an old `ETag` could otherwise answer
+    /// `304` for a file that no longer belongs to the resolved URL.
+    #[serde(default)]
+    validator: Option<String>,
 }
 
 /// Downloads (or reuses a cached copy of) an `.mrpack` and parses its index.
@@ -184,6 +194,22 @@ struct CacheMeta {
 pub async fn fetch(
     client: &reqwest::Client,
     url: &str,
+    cache_dir: &Path,
+) -> Result<MrpackArchive, ModpackError> {
+    fetch_keyed(client, url, url, None, cache_dir).await
+}
+
+/// `fetch` with an explicit cache key and validator.
+///
+/// GitHub sources resolve the newest archive on every launch, so the download
+/// URL changes with the file name. Keying the cache by the repository page
+/// avoids leaving one dead archive per upload, and the validator tells the
+/// fetcher when the archive behind an unchanged URL actually changed.
+pub async fn fetch_keyed(
+    client: &reqwest::Client,
+    url: &str,
+    cache_key: &str,
+    validator: Option<&str>,
     cache_dir: &Path,
 ) -> Result<MrpackArchive, ModpackError> {
     if let Some(local) = url.strip_prefix("file://") {
@@ -204,13 +230,23 @@ pub async fn fetch(
             path: cache_root.clone(),
             source,
         })?;
-    let key = hash_bytes(HashAlgo::Sha256, url.as_bytes())[..16].to_owned();
+    // The cache is keyed by the logical source, not by the resolved file URL.
+    let key = hash_bytes(HashAlgo::Sha256, cache_key.as_bytes())[..16].to_owned();
     let archive = cache_root.join(format!("{key}.mrpack"));
     let meta_path = cache_root.join(format!("{key}.json"));
-    let meta: Option<CacheMeta> = match tokio::fs::read(&meta_path).await {
+    let stored: Option<CacheMeta> = match tokio::fs::read(&meta_path).await {
         Ok(bytes) => serde_json::from_slice(&bytes).ok(),
         Err(_) => None,
     };
+    // Legacy meta files have no `source_url`; they are still valid for plain
+    // `fetch`, where the cache key is the URL itself. A GitHub validator means
+    // the source changed, so the old conditional headers must not be sent.
+    let meta = stored.filter(|meta| {
+        meta.source_url
+            .as_deref()
+            .is_none_or(|source| source == cache_key)
+            && meta.validator.as_deref() == validator
+    });
 
     let mut request = client.get(url);
     if let Some(meta) = &meta {
@@ -252,7 +288,19 @@ pub async fn fetch(
         // forever and the broken cache would poison every launch.
         if archive.is_file() {
             match read_index(&archive) {
-                Ok(index) => return Ok(MrpackArchive { archive, index }),
+                Ok(index) => {
+                    // Keep the metadata in sync with the source that is being
+                    // used now; it may have been migrated from a legacy URL.
+                    let refreshed = CacheMeta {
+                        source_url: Some(cache_key.to_owned()),
+                        validator: validator.map(str::to_owned),
+                        ..meta.unwrap_or_default()
+                    };
+                    if let Ok(json) = serde_json::to_vec(&refreshed) {
+                        let _ = tokio::fs::write(&meta_path, json).await;
+                    }
+                    return Ok(MrpackArchive { archive, index });
+                }
                 Err(error) => tracing::warn!(
                     %error,
                     path = %archive.display(),
@@ -315,6 +363,8 @@ pub async fn fetch(
     let meta = CacheMeta {
         etag,
         last_modified,
+        source_url: Some(cache_key.to_owned()),
+        validator: validator.map(str::to_owned),
     };
     if let Ok(json) = serde_json::to_vec(&meta) {
         let _ = tokio::fs::write(&meta_path, json).await;
@@ -737,6 +787,99 @@ mod tests {
         assert_eq!(
             stamp, stamp_after,
             "a 304 answer must reuse the cached archive without rewriting it"
+        );
+
+        server.await?;
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn changing_the_github_validator_drops_the_conditional_headers(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt as _};
+
+        fn archive(version: &str) -> Vec<u8> {
+            let mut bytes = Vec::new();
+            {
+                let cursor = std::io::Cursor::new(&mut bytes);
+                let mut writer = zip::ZipWriter::new(cursor);
+                let options = zip::write::SimpleFileOptions::default();
+                writer.start_file(INDEX_FILE, options).expect("entry");
+                std::io::Write::write_all(
+                    &mut writer,
+                    format!(
+                        r#"{{"formatVersion":1,"name":"Test pack","versionId":"{version}","files":[],"dependencies":{{"minecraft":"1.21.1","neoforge":"21.1.248"}}}}"#
+                    )
+                    .as_bytes(),
+                )
+                .expect("index");
+                writer.finish().expect("zip");
+            }
+            bytes
+        }
+
+        let directory = tempfile::tempdir()?;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+        let address = listener.local_addr()?;
+        let url = format!("http://{address}/pack.mrpack");
+        // The cache key is the repository page, while the resolved download URL
+        // is the raw file. They are deliberately different here.
+        let source = "https://github.com/o/r";
+        let first_body = archive("1.0.0");
+        let second_body = archive("2.0.0");
+        let server = tokio::spawn(async move {
+            for round in 0..3 {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut request = [0u8; 8192];
+                let read = socket.read(&mut request).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+                if request.contains("if-none-match:") {
+                    let _ = socket
+                        .write_all(b"HTTP/1.1 304 Not Modified\r\nConnection: close\r\n\r\n")
+                        .await;
+                    continue;
+                }
+                let body = if round == 0 {
+                    &first_body
+                } else {
+                    &second_body
+                };
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nETag: \"pack-v{round}\"\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = socket.write_all(head.as_bytes()).await;
+                let _ = socket.write_all(body).await;
+            }
+        });
+
+        let client = reqwest::Client::builder().no_proxy().build()?;
+        let cache_dir = directory.path().join("cache");
+        let key = hash_bytes(HashAlgo::Sha256, source.as_bytes())[..16].to_owned();
+        let archive_path = cache_dir.join("mrpack").join(format!("{key}.mrpack"));
+
+        let first = fetch_keyed(&client, &url, source, Some("blob:a"), &cache_dir).await?;
+        assert_eq!(first.index.version_id, "1.0.0");
+        assert!(
+            archive_path.is_file(),
+            "the cache must be keyed by the repository, not the file URL"
+        );
+        let stamp = std::fs::metadata(&archive_path)?.modified()?;
+
+        let second = fetch_keyed(&client, &url, source, Some("blob:a"), &cache_dir).await?;
+        assert_eq!(second.index.version_id, "1.0.0");
+        assert_eq!(
+            std::fs::metadata(&archive_path)?.modified()?,
+            stamp,
+            "the matching validator must reuse the cached archive via 304"
+        );
+
+        let third = fetch_keyed(&client, &url, source, Some("blob:b"), &cache_dir).await?;
+        assert_eq!(
+            third.index.version_id, "2.0.0",
+            "a new blob SHA must bypass the old ETag and download the new archive"
         );
 
         server.await?;

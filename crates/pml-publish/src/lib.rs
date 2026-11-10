@@ -1165,6 +1165,16 @@ fn ensure_dist_target(dir: &Path) -> Result<(), PublishError> {
     Ok(())
 }
 
+/// Chooses the source written into a distributed `config.json`.
+fn dist_source(pack_url: &str, kind: SourceKind) -> (String, SourceKind) {
+    if kind == SourceKind::Mrpack {
+        if let Some(repo) = pml_config::github_repo_from_mrpack_url(pack_url) {
+            return (format!("https://github.com/{repo}"), SourceKind::Github);
+        }
+    }
+    (pack_url.to_owned(), kind)
+}
+
 /// Writes `launcher_data/config.json`, copies the launcher executable, writes
 /// `README.txt` and packs everything into a ZIP next to the output folder.
 pub fn build_dist(request: &DistRequest) -> Result<DistResult, PublishError> {
@@ -1187,13 +1197,18 @@ pub fn build_dist(request: &DistRequest) -> Result<DistResult, PublishError> {
     let launcher_data = staging.join("launcher_data");
     std::fs::create_dir_all(&launcher_data)?;
 
+    // A release asset URL points at one exact upload. Ship the repository page
+    // instead so the player's launcher can resolve a newer `.mrpack` itself;
+    // configs without that information keep the old exact URL.
+    let (manifest_url, kind) = dist_source(&request.pack_url, request.kind);
+
     let config = Config {
         nick: "Player".to_owned(),
         sources: vec![Source {
             id: request.source_id.clone(),
             name: request.source_name.clone(),
-            manifest_url: request.pack_url.clone(),
-            kind: Some(request.kind),
+            manifest_url,
+            kind: Some(kind),
         }],
         active_source_id: request.source_id.clone(),
         jvm: pml_config::JvmConfig {
@@ -1443,6 +1458,34 @@ mod tests {
         .expect("rewrite");
         assert_eq!(added, 1);
         assert_eq!(second["files"][0]["path"], "config/example.toml");
+    }
+
+    #[test]
+    fn dist_source_updates_github_archives() {
+        assert_eq!(
+            dist_source(
+                "https://github.com/o/r/releases/download/v1/pack.mrpack",
+                SourceKind::Mrpack
+            ),
+            ("https://github.com/o/r".to_owned(), SourceKind::Github)
+        );
+        assert_eq!(
+            dist_source("https://example.com/pack.mrpack", SourceKind::Mrpack),
+            (
+                "https://example.com/pack.mrpack".to_owned(),
+                SourceKind::Mrpack
+            )
+        );
+        assert_eq!(
+            dist_source(
+                "https://raw.githubusercontent.com/o/r/main/manifest.json",
+                SourceKind::Manifest
+            ),
+            (
+                "https://raw.githubusercontent.com/o/r/main/manifest.json".to_owned(),
+                SourceKind::Manifest
+            )
+        );
     }
 
     #[test]

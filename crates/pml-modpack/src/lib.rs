@@ -18,8 +18,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use tokio::sync::mpsc;
 
+mod github;
 mod mrpack;
 
+pub use github::{resolve_latest, ResolvedMrpack};
 pub use mrpack::{
     archive_identity, extract_overrides, extract_overrides_when_changed, read_index, MrpackArchive,
     MrpackIndex, OVERRIDES_STATE_FILE,
@@ -470,6 +472,29 @@ pub async fn load_pack(
         pml_config::SourceKind::Mrpack => {
             let pack = mrpack::fetch(client, &source.manifest_url, cache_dir).await?;
             let manifest = pack.index.to_manifest()?;
+            Ok(LoadedPack {
+                manifest,
+                mrpack: Some(pack.archive),
+            })
+        }
+        pml_config::SourceKind::Github => {
+            let resolved = github::resolve_latest(client, &source.manifest_url, cache_dir).await?;
+            let pack = mrpack::fetch_keyed(
+                client,
+                &resolved.url,
+                &source.manifest_url,
+                Some(&resolved.validator),
+                cache_dir,
+            )
+            .await?;
+            let mut manifest = pack.index.to_manifest()?;
+            // The repository file name is what the author bumps between
+            // uploads; Modrinth's `versionId` may lag behind or repeat. The
+            // backup-before-update decision compares this field with the
+            // version recorded by the previous sync.
+            if !resolved.version.is_empty() {
+                manifest.version = resolved.version;
+            }
             Ok(LoadedPack {
                 manifest,
                 mrpack: Some(pack.archive),

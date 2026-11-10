@@ -91,12 +91,19 @@ pub enum SourceKind {
     Manifest,
     /// Modrinth `.mrpack` archive (a zip with `modrinth.index.json`).
     Mrpack,
+    /// GitHub repository that hosts the pack. The launcher resolves the
+    /// newest `.mrpack` itself, so players keep updating without a new
+    /// `config.json`.
+    Github,
 }
 
 impl SourceKind {
     /// Falls back to the file extension so existing configs keep working
     /// without an explicit `kind` field.
     pub fn detect(url: &str) -> Self {
+        if github_repo_from_url(url).is_some() {
+            return Self::Github;
+        }
         let path = url
             .split(['?', '#'])
             .next()
@@ -110,9 +117,107 @@ impl SourceKind {
     }
 }
 
+/// Splits an `https://host/path` URL without pulling in a URL parser. The
+/// launcher only accepts plain HTTPS sources, so userinfo, ports and other
+/// schemes are intentionally treated as unsupported.
+fn split_https(url: &str) -> Option<(&str, &str)> {
+    let rest = url.strip_prefix("https://")?;
+    let (host, path) = rest.split_once('/')?;
+    if host.is_empty() {
+        return None;
+    }
+    Some((host, path))
+}
+
+fn is_valid_github_segment(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 100
+        && value != "."
+        && value != ".."
+        && value
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+}
+
+fn ends_with_mrpack(value: &str) -> bool {
+    value.to_ascii_lowercase().ends_with(".mrpack")
+}
+
+/// Extracts `owner/repo` from a repository page such as
+/// `https://github.com/ElMakgit/Odium`.
+///
+/// File, raw and release URLs intentionally return `None`: they are handled by
+/// the older `Mrpack` kind and migrated by [`Config::repair`].
+pub fn github_repo_from_url(url: &str) -> Option<String> {
+    let (host, path) = split_https(url)?;
+    if !(host.eq_ignore_ascii_case("github.com") || host.eq_ignore_ascii_case("www.github.com")) {
+        return None;
+    }
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let mut segments = path.trim_matches('/').split('/');
+    let owner = segments.next()?;
+    let raw_repo = segments.next()?;
+    let repo = raw_repo.strip_suffix(".git").unwrap_or(raw_repo);
+    if segments.next().is_some()
+        || !is_valid_github_segment(owner)
+        || !is_valid_github_segment(repo)
+    {
+        return None;
+    }
+    Some(format!("{owner}/{repo}"))
+}
+
+/// Extracts `owner/repo` from any GitHub URL that points at an `.mrpack` file:
+/// raw, blob, release asset or `releases/latest/download`.
+///
+/// This is the migration path for configs written before auto-updating sources
+/// existed. A manifest URL is left alone because it belongs to `Manifest`.
+pub fn github_repo_from_mrpack_url(url: &str) -> Option<String> {
+    let (host, path) = split_https(url)?;
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let segments: Vec<&str> = path
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let file = *segments.last()?;
+    if !ends_with_mrpack(file) || segments.len() < 4 {
+        return None;
+    }
+    let owner = segments[0];
+    let repo = segments[1].strip_suffix(".git").unwrap_or(segments[1]);
+    if !is_valid_github_segment(owner) || !is_valid_github_segment(repo) {
+        return None;
+    }
+    let is_file_url = if host.eq_ignore_ascii_case("raw.githubusercontent.com") {
+        // owner/repo/ref/path...
+        segments.len() >= 4
+    } else if host.eq_ignore_ascii_case("github.com") || host.eq_ignore_ascii_case("www.github.com")
+    {
+        match segments.get(2).copied() {
+            // owner/repo/raw/ref/path... and owner/repo/blob/ref/path...
+            Some("raw" | "blob") => segments.len() >= 5,
+            // owner/repo/releases/download/tag/file
+            // owner/repo/releases/latest/download/file
+            Some("releases") => {
+                (segments.get(3) == Some(&"download") && segments.len() >= 6)
+                    || (segments.get(3) == Some(&"latest")
+                        && segments.get(4) == Some(&"download")
+                        && segments.len() >= 6)
+            }
+            _ => false,
+        }
+    } else {
+        false
+    };
+    is_file_url.then(|| format!("{owner}/{repo}"))
+}
+
 /// A modpack source. `manifest_url` may point at GitHub raw, any HTTPS CDN,
-/// a local `file://` manifest, or one of the embedded `builtin://` manifests.
-/// For `SourceKind::Mrpack` it points at the `.mrpack` archive itself.
+/// a local `file://` manifest, one of the embedded `builtin://` manifests, or
+/// a GitHub repository page such as `https://github.com/owner/repo`.
+/// For `SourceKind::Mrpack` it points at the `.mrpack` archive itself; for
+/// `SourceKind::Github` the launcher resolves the newest archive automatically.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Source {
     pub id: String,
@@ -469,6 +574,27 @@ impl Config {
         for source in &mut self.sources {
             if source.name.trim().is_empty() {
                 source.name = source.id.clone();
+            }
+            // Configs written before GitHub sources existed point at one exact
+            // archive (raw or release asset). Rewrite them to the repository
+            // page so the next launch picks up a newer upload instead of
+            // serving the same file forever. `manifest.json` sources keep the
+            // manifest kind: only `.mrpack` files are migrated.
+            if let Some(repo) = github_repo_from_mrpack_url(&source.manifest_url) {
+                let migrated = format!("https://github.com/{repo}");
+                if source.manifest_url != migrated || source.kind != Some(SourceKind::Github) {
+                    tracing::info!(
+                        source_id = %source.id,
+                        from = %source.manifest_url,
+                        to = %migrated,
+                        "migrating source to GitHub auto-update"
+                    );
+                    source.manifest_url = migrated;
+                    source.kind = Some(SourceKind::Github);
+                }
+            } else if source.kind.is_none() && github_repo_from_url(&source.manifest_url).is_some()
+            {
+                source.kind = Some(SourceKind::Github);
             }
         }
     }
@@ -1368,6 +1494,98 @@ mod tests {
             config.sources[0].manifest_url,
             "https://raw.githubusercontent.com/o/r/main/manifest.json"
         );
+    }
+
+    #[test]
+    fn github_urls_are_classified() {
+        for url in [
+            "https://github.com/ElMakgit/Odium",
+            "https://github.com/ElMakgit/Odium/",
+            "https://www.github.com/ElMakgit/Odium.git",
+        ] {
+            assert_eq!(
+                github_repo_from_url(url).as_deref(),
+                Some("ElMakgit/Odium"),
+                "{url} must be a repository"
+            );
+            assert_eq!(SourceKind::detect(url), SourceKind::Github);
+        }
+        for url in [
+            "https://raw.githubusercontent.com/ElMakgit/Odium/main/pack.mrpack",
+            "https://github.com/ElMakgit/Odium/releases/download/v1/pack.mrpack",
+            "https://example.com/owner/repo",
+            "http://github.com/owner/repo",
+        ] {
+            assert_eq!(github_repo_from_url(url), None, "{url} is not a repo page");
+        }
+        assert_eq!(
+            SourceKind::detect("https://raw.githubusercontent.com/o/r/main/pack.mrpack"),
+            SourceKind::Mrpack
+        );
+    }
+
+    #[test]
+    fn mrpack_urls_point_back_to_their_repository() {
+        for url in [
+            "https://raw.githubusercontent.com/ElMakgit/Odium/main/EblyaCraft%20Don%27s%20Edit%202.3.1.mrpack",
+            "https://github.com/ElMakgit/Odium/raw/main/pack.mrpack",
+            "https://github.com/ElMakgit/Odium/blob/main/pack.mrpack?raw=true",
+            "https://github.com/ElMakgit/Odium/releases/download/v2.3.1/pack.mrpack",
+            "https://github.com/ElMakgit/Odium/releases/latest/download/pack.mrpack",
+        ] {
+            assert_eq!(
+                github_repo_from_mrpack_url(url).as_deref(),
+                Some("ElMakgit/Odium"),
+                "{url} must migrate to the repository"
+            );
+        }
+        assert_eq!(
+            github_repo_from_mrpack_url("https://raw.githubusercontent.com/o/r/main/manifest.json"),
+            None
+        );
+        assert_eq!(
+            github_repo_from_mrpack_url("https://example.com/owner/repo/pack.mrpack"),
+            None
+        );
+    }
+
+    #[test]
+    fn repair_migrates_exact_github_archives_to_auto_update() {
+        let mut config = sample_config();
+        config.sources = vec![
+            Source {
+                id: "raw".to_owned(),
+                name: "Raw".to_owned(),
+                manifest_url:
+                    "https://raw.githubusercontent.com/o/r/main/EblyaCraft%202.3.1.mrpack"
+                        .to_owned(),
+                kind: Some(SourceKind::Mrpack),
+            },
+            Source {
+                id: "release".to_owned(),
+                name: "Release".to_owned(),
+                manifest_url: "https://github.com/o/r/releases/download/v2.3.1/pack.mrpack"
+                    .to_owned(),
+                kind: Some(SourceKind::Mrpack),
+            },
+            Source {
+                id: "manifest".to_owned(),
+                name: "Manifest".to_owned(),
+                manifest_url: "https://raw.githubusercontent.com/o/r/main/manifest.json".to_owned(),
+                kind: None,
+            },
+        ];
+        config.active_source_id = "raw".to_owned();
+        config.repair();
+        assert_eq!(config.sources[0].manifest_url, "https://github.com/o/r");
+        assert_eq!(config.sources[0].kind, Some(SourceKind::Github));
+        assert_eq!(config.sources[1].manifest_url, "https://github.com/o/r");
+        assert_eq!(config.sources[1].kind, Some(SourceKind::Github));
+        assert_eq!(
+            config.sources[2].manifest_url,
+            "https://raw.githubusercontent.com/o/r/main/manifest.json"
+        );
+        assert_eq!(config.sources[2].kind, None);
     }
 
     #[test]
