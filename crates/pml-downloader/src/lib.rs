@@ -271,8 +271,51 @@ pub struct FileOutcome {
 struct HashCacheEntry {
     size: u64,
     mtime_ns: u64,
+    /// Volume + file index (Windows) or device + inode (Unix). Size and mtime
+    /// alone let a replaced file reuse an old cache entry; the identity closes
+    /// that hole. Empty for caches written by older builds.
+    #[serde(default)]
+    file_id: String,
     algo: String,
     hash: String,
+}
+
+/// Stable identity of the file on disk, independent of its contents.
+#[cfg(windows)]
+fn file_identity(path: &Path) -> String {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    // Stable Rust does not expose the file index through `Metadata`, so reopen
+    // the file and ask the filesystem for the volume serial and file index.
+    let Ok(file) = std::fs::File::open(path) else {
+        return String::new();
+    };
+    let mut info: BY_HANDLE_FILE_INFORMATION = unsafe { std::mem::zeroed() };
+    // SAFETY: `file` owns a live handle and `info` is a valid, aligned
+    // out-parameter for the duration of the call.
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, &mut info) };
+    if ok == 0 {
+        return String::new();
+    }
+    let index = (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow);
+    format!("{:x}:{index:x}", info.dwVolumeSerialNumber)
+}
+
+#[cfg(unix)]
+fn file_identity(path: &Path) -> String {
+    use std::os::unix::fs::MetadataExt;
+    match std::fs::metadata(path) {
+        Ok(metadata) => format!("{:x}:{:x}", metadata.dev(), metadata.ino()),
+        Err(_) => String::new(),
+    }
+}
+
+#[cfg(not(any(windows, unix)))]
+fn file_identity(_path: &Path) -> String {
+    String::new()
 }
 
 /// Validators stored next to a `.part` file. `If-Range` makes a resumed
@@ -354,7 +397,11 @@ impl HashCache {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         entries.get(&key).is_some_and(|entry| {
-            entry.size == metadata.len()
+            let identity = file_identity(&task.dest);
+            // Legacy entries have no identity; they are accepted once and
+            // rewritten by `record` with the new field.
+            (entry.file_id.is_empty() || entry.file_id == identity)
+                && entry.size == metadata.len()
                 && entry.mtime_ns == mtime_ns(metadata)
                 && entry.algo == algo_name(task.algo)
                 && entry.hash.eq_ignore_ascii_case(expected)
@@ -374,6 +421,7 @@ impl HashCache {
         let entry = HashCacheEntry {
             size: metadata.len(),
             mtime_ns: mtime_ns(metadata),
+            file_id: file_identity(&task.dest),
             algo: algo_name(task.algo).to_owned(),
             hash: expected.to_ascii_lowercase(),
         };
@@ -1273,6 +1321,40 @@ impl Downloader {
             })?;
         let mut status = response.status();
         if status == reqwest::StatusCode::RANGE_NOT_SATISFIABLE {
+            // A `.part` at or past EOF is usually stale, but when its length
+            // exactly matches the manifest and the hash checks out, the file is
+            // already complete: finish it instead of downloading again.
+            let complete = task
+                .size
+                .is_some_and(|expected| expected > 0 && expected == resume_from);
+            if complete {
+                let expected = task.sha.as_deref().unwrap_or_default();
+                if !expected.is_empty() && verify_hash(&part, expected, task.algo).await? {
+                    match tokio::fs::rename(&part, &task.dest).await {
+                        Ok(()) => {
+                            let _ = tokio::fs::remove_file(&meta_path).await;
+                            tracing::info!(
+                                path = %task.dest.display(),
+                                bytes = resume_from,
+                                "completed a download from a full .part file"
+                            );
+                            return Ok(FileOutcome {
+                                skipped: false,
+                                bytes: resume_from,
+                            });
+                        }
+                        Err(_) if destination_matches(task).await => {
+                            let _ = tokio::fs::remove_file(&part).await;
+                            let _ = tokio::fs::remove_file(&meta_path).await;
+                            return Ok(FileOutcome {
+                                skipped: false,
+                                bytes: resume_from,
+                            });
+                        }
+                        Err(source) => return Err(io_error(&task.dest, source)),
+                    }
+                }
+            }
             // A stale part at or past EOF: start the file over.
             discard_part(&part, &meta_path).await;
             resume_from = 0;
@@ -2391,6 +2473,57 @@ mod tests {
         let mut changed = task.clone();
         changed.sha = Some("0".repeat(64));
         assert!(!reloaded.matches(&changed, &metadata));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn hash_cache_rejects_a_replaced_file() -> Result<(), Box<dyn std::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let dest = dir.path().join("mods").join("example.jar");
+        tokio::fs::create_dir_all(dest.parent().expect("parent")).await?;
+        let body = b"cached mod bytes";
+        tokio::fs::write(&dest, body).await?;
+        let task = DownloadTask::new(
+            "http://127.0.0.1/example.jar".to_owned(),
+            dest.clone(),
+            Some(hash_bytes(HashAlgo::Sha256, body)),
+            HashAlgo::Sha256,
+            Some(body.len() as u64),
+            "example",
+        );
+        let cache = HashCache::load(dir.path().to_path_buf()).await;
+        let metadata = tokio::fs::metadata(&dest).await?;
+        cache.record(&task, &metadata);
+        assert!(cache.matches(&task, &metadata));
+
+        let key = dest
+            .strip_prefix(dir.path())?
+            .to_string_lossy()
+            .replace('\\', "/");
+        {
+            let mut entries = cache
+                .entries
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let entry = entries.get_mut(&key).expect("recorded entry");
+            entry.file_id = "deadbeef:1".to_owned();
+        }
+        assert!(
+            !cache.matches(&task, &metadata),
+            "another file identity must invalidate the cache"
+        );
+        {
+            let mut entries = cache
+                .entries
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let entry = entries.get_mut(&key).expect("recorded entry");
+            entry.file_id.clear();
+        }
+        assert!(
+            cache.matches(&task, &metadata),
+            "legacy entries without an identity stay usable"
+        );
         Ok(())
     }
 

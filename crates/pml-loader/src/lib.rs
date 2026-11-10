@@ -422,7 +422,7 @@ impl LoaderInstaller {
             supplied_locally = true;
         } else if !cache.is_file() {
             if let Err(error) = self
-                .download_installer(loader_name, url, cache, progress.clone())
+                .download_installer(loader_name, url, cache, progress.clone(), cancel.clone())
                 .await
             {
                 let Some(bundle) = bundle else {
@@ -445,7 +445,13 @@ impl LoaderInstaller {
             // tiny request decides whether the libraries must come from a mirror
             // before Java is even started.
             let available = matches!(
-                probe_checksum(&self.downloader, &format!("{url}.sha1"), HashAlgo::Sha1).await,
+                probe_checksum(
+                    &self.downloader,
+                    &format!("{url}.sha1"),
+                    HashAlgo::Sha1,
+                    cancel.as_ref(),
+                )
+                .await,
                 ChecksumProbe::Found(_)
             );
             if !available {
@@ -455,7 +461,13 @@ impl LoaderInstaller {
                     "NeoForge Maven is unreachable; trying the public mirrors"
                 );
                 match self
-                    .prefetch_libraries_from_mirrors(cache, loader, progress.clone())
+                    .prefetch_libraries_from_mirrors(
+                        cache,
+                        minecraft,
+                        loader,
+                        progress.clone(),
+                        cancel.clone(),
+                    )
                     .await
                 {
                     Ok(()) => supplied_locally = true,
@@ -493,7 +505,13 @@ impl LoaderInstaller {
                 "installer failed; retrying with mirrored libraries"
             );
             if self
-                .prefetch_libraries_from_mirrors(cache, loader, progress.clone())
+                .prefetch_libraries_from_mirrors(
+                    cache,
+                    minecraft,
+                    loader,
+                    progress.clone(),
+                    cancel.clone(),
+                )
                 .await
                 .is_err()
             {
@@ -562,17 +580,24 @@ impl LoaderInstaller {
         url: &str,
         cache: &Path,
         progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
+        cancel: Option<CancelToken>,
     ) -> Result<(), LoaderError> {
         let candidates = installer_candidates(url);
         let mut checksum = None;
         let mut last_reason = None;
         for candidate in &candidates {
-            match fetch_checksum(&self.downloader, candidate).await {
+            if cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+                return Err(LoaderError::InstallerCancelled(loader_name.to_owned()));
+            }
+            match fetch_checksum(&self.downloader, candidate, cancel.as_ref()).await {
                 Ok(found) => {
                     checksum = Some(found);
                     break;
                 }
                 Err(reason) => {
+                    if cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+                        return Err(LoaderError::InstallerCancelled(loader_name.to_owned()));
+                    }
                     tracing::warn!(
                         url = candidate,
                         loader = loader_name,
@@ -778,9 +803,14 @@ impl LoaderInstaller {
     async fn prefetch_libraries_from_mirrors(
         &self,
         cache: &Path,
+        minecraft: &str,
         loader: &str,
         progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
+        cancel: Option<CancelToken>,
     ) -> Result<(), LoaderError> {
+        if cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+            return Err(LoaderError::InstallerCancelled("NeoForge".to_owned()));
+        }
         let installer = cache.to_path_buf();
         let artifacts = tokio::task::spawn_blocking(move || installer_maven_artifacts(&installer))
             .await
@@ -794,22 +824,42 @@ impl LoaderInstaller {
             });
         }
 
+        // Legacy NeoForge 1.20.1 lives under `net/neoforged/forge` and its
+        // version is `1.20.1-47.1.79`, not the modern `neoforge/<ver>` layout.
+        let legacy = neoforge_legacy(minecraft, loader);
+        let probe_paths = if legacy {
+            vec![format!(
+                "net/neoforged/forge/{minecraft}-{loader}/forge-{minecraft}-{loader}-installer.jar.sha1"
+            )]
+        } else {
+            vec![
+                format!("net/neoforged/neoforge/{loader}/neoforge-{loader}-installer.jar.sha1"),
+                format!("net/neoforged/forge/{loader}/forge-{loader}-installer.jar.sha1"),
+            ]
+        };
+
         // Probes run in parallel: several hosts that all time out would
         // otherwise delay the install by one timeout each. The canonical host
         // is skipped because the caller only gets here when it is unreachable.
         let mut probes = tokio::task::JoinSet::new();
         for base in NEOFORGE_MIRRORS.iter().skip(1) {
-            let sidecar = format!(
-                "{base}/net/neoforged/neoforge/{loader}/neoforge-{loader}-installer.jar.sha1"
-            );
             let downloader = self.downloader.clone();
+            let probe_paths = probe_paths.clone();
             let base = *base;
+            let cancel = cancel.clone();
             probes.spawn(async move {
-                let found = matches!(
-                    probe_checksum(&downloader, &sidecar, HashAlgo::Sha1).await,
-                    ChecksumProbe::Found(_)
-                );
-                (base, found)
+                for path in probe_paths {
+                    let sidecar = format!("{base}/{path}");
+                    let found = matches!(
+                        probe_checksum(&downloader, &sidecar, HashAlgo::Sha1, cancel.as_ref())
+                            .await,
+                        ChecksumProbe::Found(_)
+                    );
+                    if found {
+                        return (base, true);
+                    }
+                }
+                (base, false)
             });
         }
         // The first host to answer goes first: on a bad connection that is
@@ -832,6 +882,9 @@ impl LoaderInstaller {
         let libraries = self.paths.libraries_dir();
         let mut downloaded = 0;
         for artifact in artifacts {
+            if cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+                return Err(LoaderError::InstallerCancelled("NeoForge".to_owned()));
+            }
             let destination = libraries.join(Path::new(&artifact.path));
             let label = artifact
                 .path
@@ -1079,6 +1132,11 @@ async fn read_profile_required(path: &Path) -> Result<VersionJson, LoaderError> 
 }
 
 async fn find_version_json(root: &Path, version_id: &str) -> Option<PathBuf> {
+    const SCAN_TIMEOUT: Duration = Duration::from_secs(2);
+    // A network folder or a filesystem with many unreadable entries could
+    // otherwise keep the launcher stuck here before the game even starts.
+    const MAX_SCAN_ERRORS: usize = 8;
+
     let direct = root.join(version_id).join(format!("{version_id}.json"));
     if direct.is_file() {
         return Some(direct);
@@ -1098,37 +1156,53 @@ async fn find_version_json(root: &Path, version_id: &str) -> Option<PathBuf> {
             return None;
         }
     };
-    loop {
-        match entries.next_entry().await {
-            Ok(Some(entry)) => {
-                let directory = entry.path();
-                if !directory.is_dir() {
-                    continue;
+    let scan = async {
+        let mut errors = 0usize;
+        loop {
+            match entries.next_entry().await {
+                Ok(Some(entry)) => {
+                    errors = 0;
+                    let directory = entry.path();
+                    if !directory.is_dir() {
+                        continue;
+                    }
+                    let file = directory.join(format!("{version_id}.json"));
+                    if file.is_file() {
+                        return Some(file);
+                    }
                 }
-                let file = directory.join(format!("{version_id}.json"));
-                if file.is_file() {
-                    return Some(file);
+                Ok(None) => return None,
+                // One unreadable entry (permissions, `\\?\` quirks) must not stop
+                // the rest of the scan: warn and move on to the next directory.
+                Err(error) => {
+                    errors += 1;
+                    tracing::warn!(
+                        %error,
+                        root = %root.display(),
+                        errors,
+                        "skipping an unreadable version directory"
+                    );
+                    if errors >= MAX_SCAN_ERRORS {
+                        tracing::warn!(
+                            root = %root.display(),
+                            "too many unreadable entries; stopping the version scan"
+                        );
+                        return None;
+                    }
                 }
-            }
-            Ok(None) => break,
-            // One unreadable entry (permissions, `\\?\` quirks) must not stop
-            // the rest of the scan: warn and move on to the next directory.
-            Err(error) => {
-                tracing::warn!(
-                    %error,
-                    root = %root.display(),
-                    "skipping an unreadable version directory"
-                );
-                continue;
             }
         }
+    };
+    match tokio::time::timeout(SCAN_TIMEOUT, scan).await {
+        Ok(found) => found,
+        Err(_) => {
+            tracing::warn!(
+                root = %root.display(),
+                "version directory scan timed out"
+            );
+            None
+        }
     }
-    tracing::debug!(
-        version_id,
-        root = %root.display(),
-        "loader profile with the exact version id was not found"
-    );
-    None
 }
 
 // The whole purpose of this fallback is `%APPDATA%\.minecraft`; on other
@@ -1154,16 +1228,23 @@ fn default_minecraft_versions() -> Option<PathBuf> {
 /// The failure reason is propagated because the two realistic causes need
 /// completely different fixes: a TLS error usually means an outdated root store
 /// on the client, while a timeout points at a blocked network.
-async fn fetch_checksum(downloader: &Downloader, url: &str) -> Result<Checksum, String> {
+async fn fetch_checksum(
+    downloader: &Downloader,
+    url: &str,
+    cancel: Option<&CancelToken>,
+) -> Result<Checksum, String> {
     let mut reason = String::from("нет ответа");
     for algo in [HashAlgo::Sha1, HashAlgo::Sha256] {
         let extension = checksum_extension(algo);
         let sidecar = format!("{url}.{extension}");
         for attempt in 0..CHECKSUM_ATTEMPTS {
+            if cancel.is_some_and(CancelToken::is_cancelled) {
+                return Err("операция отменена".to_owned());
+            }
             if attempt > 0 {
                 tokio::time::sleep(CHECKSUM_RETRY_DELAY * attempt).await;
             }
-            match probe_checksum(downloader, &sidecar, algo).await {
+            match probe_checksum(downloader, &sidecar, algo, cancel).await {
                 ChecksumProbe::Found(value) => return Ok(Checksum { value, algo }),
                 // A 404 will not heal within a retry; try the next digest.
                 ChecksumProbe::Missing => {
@@ -1192,7 +1273,15 @@ enum ChecksumProbe {
     Failed(String),
 }
 
-async fn probe_checksum(downloader: &Downloader, url: &str, algo: HashAlgo) -> ChecksumProbe {
+async fn probe_checksum(
+    downloader: &Downloader,
+    url: &str,
+    algo: HashAlgo,
+    cancel: Option<&CancelToken>,
+) -> ChecksumProbe {
+    if cancel.is_some_and(CancelToken::is_cancelled) {
+        return ChecksumProbe::Failed("операция отменена".to_owned());
+    }
     let response = match downloader.client().get(url).send().await {
         Ok(response) => response,
         Err(error) => return ChecksumProbe::Failed(describe_request_error(&error)),
@@ -1524,7 +1613,7 @@ mod tests {
         let downloader = Downloader::new(2)?;
         for (mc_version, loader_version) in [("1.21.1", "21.1.248"), ("1.20.1", "47.1.79")] {
             let url = neoforge_installer_url(mc_version, loader_version);
-            let checksum = fetch_checksum(&downloader, &url)
+            let checksum = fetch_checksum(&downloader, &url, None)
                 .await
                 .unwrap_or_else(|reason| panic!("no checksum for {url}: {reason}"));
             assert_eq!(checksum.algo, HashAlgo::Sha1, "{url}");

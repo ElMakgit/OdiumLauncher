@@ -6,6 +6,7 @@
 //! Downloads additionally stream `DownloadEvent`s into the same channel.
 
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -18,6 +19,7 @@ use tokio::sync::mpsc;
 
 use crate::glass;
 
+mod config_writer;
 mod diagnostics;
 mod pipeline;
 mod publisher;
@@ -25,6 +27,7 @@ mod util;
 mod views;
 mod welcome;
 
+use config_writer::ConfigWriter;
 use pipeline::UiEvent;
 use publisher::PublisherState;
 use util::{format_bytes, total_system_ram_mb};
@@ -37,6 +40,38 @@ use welcome::WelcomeState;
 struct ServerStatus {
     reachable: bool,
     latency_ms: u128,
+}
+
+/// Manifest facts formatted for the pack panel. Rebuilt when the manifest
+/// changes instead of cloning every string on each frame; the panel holds an
+/// `Arc`, so drawing only bumps a reference count.
+struct PackFacts {
+    name: String,
+    version: String,
+    mc_version: String,
+    loader: String,
+    files: String,
+}
+
+impl PackFacts {
+    fn new(manifest: &Manifest) -> Self {
+        let optional = manifest.optional_files.len();
+        Self {
+            name: manifest.name.clone(),
+            version: manifest.version.clone(),
+            mc_version: manifest.mc_version.clone(),
+            loader: format!(
+                "{} {}",
+                manifest.loader.kind.label(),
+                manifest.loader.version
+            ),
+            files: if optional == 0 {
+                manifest.files.len().to_string()
+            } else {
+                format!("{} + {} доп.", manifest.files.len(), optional)
+            },
+        }
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -58,6 +93,10 @@ pub fn run(
     let downloader = Downloader::new(store.config().download_concurrency)?;
     let theme = store.config().theme;
     let text_scale = store.config().text_scale();
+    // Theme switches must never touch the disk on the UI thread: read the
+    // system fonts in the background while the window is being created. The
+    // cache makes this idempotent, so a slow read only costs the first frame.
+    std::thread::spawn(pml_theme::warm_fonts);
     let dog_icon = eframe::icon_data::from_png_bytes(include_bytes!("../assets/dog_face.png")).ok();
     let mut viewport = egui::ViewportBuilder::default()
         .with_inner_size([1010.0, 680.0])
@@ -108,8 +147,13 @@ struct LauncherApp {
     reset_rx: Option<mpsc::UnboundedReceiver<Result<pml_modpack::ResetReport, String>>>,
     confirm_reset: bool,
     manifest: Option<Manifest>,
+    /// Pre-formatted facts of `manifest`, refreshed only when it changes.
+    facts: Option<Arc<PackFacts>>,
     manifest_error: Option<String>,
     java: Option<JavaInstallation>,
+    /// Source list as loaded from `config.json`. The UI has no editor for it,
+    /// so it is copied once instead of on every frame.
+    sources: Vec<Source>,
     source_id: String,
     nick: String,
     xms: u32,
@@ -124,6 +168,8 @@ struct LauncherApp {
     game_running: bool,
     log_path: Option<PathBuf>,
     log_lines: Vec<String>,
+    /// `log_lines` joined once per update, not once per frame.
+    log_text: String,
     log_rx: Option<mpsc::UnboundedReceiver<Vec<String>>>,
     last_log_poll: Instant,
     server_status: Option<ServerStatus>,
@@ -150,6 +196,9 @@ struct LauncherApp {
     /// True once the data root is gone: nothing may write to it again, so the
     /// usual "save on close" is skipped and the window exits quietly.
     uninstalled: bool,
+    /// Serialises `config.json` on a worker thread.
+    config_writer: ConfigWriter,
+    diagnostics_rx: Option<mpsc::UnboundedReceiver<Result<PathBuf, String>>>,
 }
 
 impl LauncherApp {
@@ -173,8 +222,10 @@ impl LauncherApp {
         let jvm = config.jvm_for(&config.active_source_id);
         let auto_xmx = jvm.auto_xmx;
         let (xms, xmx) = jvm.resolved(total_ram_mb);
+        let config_writer = ConfigWriter::spawn(store.path().to_path_buf());
         Self {
             paths,
+            sources: config.sources.clone(),
             source_id: config.active_source_id.clone(),
             nick: config.nick.clone(),
             xms,
@@ -192,6 +243,7 @@ impl LauncherApp {
             reset_rx: None,
             confirm_reset: false,
             manifest: None,
+            facts: None,
             manifest_error: None,
             java: None,
             status: "Готов к запуску".to_owned(),
@@ -200,6 +252,7 @@ impl LauncherApp {
             game_running: false,
             log_path: None,
             log_lines: Vec::new(),
+            log_text: String::new(),
             log_rx: None,
             last_log_poll: Instant::now(),
             server_status: None,
@@ -223,7 +276,23 @@ impl LauncherApp {
             uninstall_rx: None,
             uninstalling: false,
             uninstalled: false,
+            config_writer,
+            diagnostics_rx: None,
         }
+    }
+
+    /// Replacement for every direct `self.manifest = ...` assignment: the
+    /// pack facts are rebuilt here, once per change.
+    fn set_manifest(&mut self, manifest: Option<Manifest>) {
+        self.facts = manifest
+            .as_ref()
+            .map(|manifest| Arc::new(PackFacts::new(manifest)));
+        self.manifest = manifest;
+    }
+
+    fn set_log_lines(&mut self, lines: Vec<String>) {
+        self.log_text = lines.join("\n");
+        self.log_lines = lines;
     }
 
     fn selected_source(&self) -> Option<Source> {
@@ -248,9 +317,7 @@ impl LauncherApp {
             config.theme = self.theme;
             config.font_scale = self.font_scale;
         }
-        if let Err(error) = self.store.save() {
-            self.error = Some(format!("Не удалось сохранить config.json: {error}"));
-        }
+        self.config_writer.save(self.store.config().clone());
     }
 
     /// Loads the heap settings remembered for the active source, falling back
@@ -271,7 +338,7 @@ impl LauncherApp {
         self.persist();
         self.source_id = id.to_owned();
         self.apply_jvm_for_active_source();
-        self.manifest = None;
+        self.set_manifest(None);
         self.manifest_error = None;
         self.persist();
         self.refresh_manifest();
@@ -285,9 +352,7 @@ impl LauncherApp {
         self.theme = theme;
         pml_theme::apply(ctx, theme);
         self.store.config_mut().theme = theme;
-        if let Err(error) = self.store.save() {
-            self.error = Some(format!("Не удалось сохранить config.json: {error}"));
-        }
+        self.config_writer.save(self.store.config().clone());
         if entering_glass {
             // The window already exists, so hide it briefly while the desktop
             // is photographed; otherwise the snapshot would contain the UI.
@@ -427,6 +492,9 @@ impl LauncherApp {
             );
             return;
         }
+        // Stop the config writer first: a queued save would recreate the
+        // folder the uninstaller is about to delete.
+        self.config_writer.discard();
         let root = self.paths.root().to_path_buf();
         let exe = std::env::current_exe().ok();
         let (tx, rx) = mpsc::unbounded_channel();
@@ -510,7 +578,7 @@ impl LauncherApp {
         self.game_running = false;
         self.progress = 0.0;
         self.status = "Подготовка…".to_owned();
-        self.log_lines.clear();
+        self.set_log_lines(Vec::new());
     }
 
     /// Queues a background tail of the game log. Only one request is in flight
@@ -576,7 +644,7 @@ impl LauncherApp {
                     }
                     Ok(UiEvent::Download(event)) => self.apply_download_event(event),
                     Ok(UiEvent::Manifest(manifest)) => {
-                        self.manifest = Some(*manifest);
+                        self.set_manifest(Some(*manifest));
                         self.manifest_error = None;
                     }
                     Ok(UiEvent::Java(java)) => self.java = Some(java),
@@ -589,7 +657,7 @@ impl LauncherApp {
                             Some(pid) => format!("Игра запущена (PID {pid})"),
                             None => "Игра запущена".to_owned(),
                         };
-                        self.log_lines.clear();
+                        self.set_log_lines(Vec::new());
                         self.request_log_tail(log_path.clone());
                         self.last_log_poll = Instant::now();
                         self.log_path = Some(log_path);
@@ -631,7 +699,19 @@ impl LauncherApp {
                     }
                 }
             }
-            if !disconnected {
+            if disconnected {
+                // The pipeline task ends by sending `Finished`, `Failed` or
+                // `Cancelled` and then drops the sender. A channel that closes
+                // while `busy` is still set means the task died before it could
+                // report: without this the Play button stayed disabled forever.
+                if self.busy {
+                    self.busy = false;
+                    self.progress = 0.0;
+                    self.status = "Операция прервалась".to_owned();
+                    self.error =
+                        Some("Подготовка прервалась неожиданно. Повторите запуск.".to_owned());
+                }
+            } else {
                 self.events_rx = Some(receiver);
             }
         }
@@ -639,7 +719,7 @@ impl LauncherApp {
         if let Some(mut receiver) = self.manifest_rx.take() {
             match receiver.try_recv() {
                 Ok(Ok(manifest)) => {
-                    self.manifest = Some(manifest);
+                    self.set_manifest(Some(manifest));
                     self.manifest_error = None;
                     if !self.busy {
                         self.status = "Готов к запуску".to_owned();
@@ -658,7 +738,7 @@ impl LauncherApp {
         if let Some(mut receiver) = self.reset_rx.take() {
             match receiver.try_recv() {
                 Ok(Ok(report)) => {
-                    self.manifest = None;
+                    self.set_manifest(None);
                     self.manifest_error = None;
                     self.status = if report.failed == 0 {
                         format!(
@@ -739,11 +819,29 @@ impl LauncherApp {
 
         if let Some(mut receiver) = self.log_rx.take() {
             match receiver.try_recv() {
-                Ok(lines) => self.log_lines = lines,
+                Ok(lines) => self.set_log_lines(lines),
                 Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
                     self.log_rx = Some(receiver);
                 }
                 Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {}
+            }
+        }
+
+        if let Some(mut receiver) = self.diagnostics_rx.take() {
+            match receiver.try_recv() {
+                Ok(Ok(path)) => {
+                    self.status = format!("Диагностика сохранена: {}", path.display());
+                    self.open_diagnostics_folder();
+                }
+                Ok(Err(error)) => {
+                    self.error = Some(format!("Не удалось сохранить диагностику: {error}"));
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                    self.diagnostics_rx = Some(receiver);
+                }
+                Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {
+                    self.error = Some("Экспорт диагностики прервался неожиданно".to_owned());
+                }
             }
         }
 
@@ -822,6 +920,9 @@ impl eframe::App for LauncherApp {
         // would resurrect the folder the user just deleted.
         if !self.uninstalled && ctx.input(|input| input.viewport().close_requested()) {
             self.persist();
+            // The process may exit as soon as this frame ends, so wait for the
+            // queued snapshot instead of losing the last edits.
+            self.config_writer.flush();
         }
         self.sync_glass(frame);
         self.backdrop.poll(ctx);
@@ -837,6 +938,9 @@ impl eframe::App for LauncherApp {
         }
         self.poll_events(ctx);
         self.poll_publisher(ctx);
+        if let Some(error) = self.config_writer.take_error() {
+            self.error = Some(format!("Не удалось сохранить config.json: {error}"));
+        }
 
         egui::TopBottomPanel::bottom("pml_bottom")
             .exact_height(84.0)

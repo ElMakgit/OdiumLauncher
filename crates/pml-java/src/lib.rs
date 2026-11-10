@@ -553,6 +553,51 @@ async fn download_temurin(
     progress: Option<mpsc::UnboundedSender<DownloadEvent>>,
     cancel: Option<CancelToken>,
 ) -> Result<JavaInstallation, JavaError> {
+    let extract_dir = paths.java_dir().join(format!("temurin-{required}"));
+
+    // A previous run may already have extracted this runtime. Probe it before
+    // spending ~200 MB of traffic; a half-extracted or too-old folder is
+    // removed instead of being trusted.
+    if let Some(existing) = find_java_executable(&extract_dir) {
+        match probe_java(&existing).await {
+            Ok(probe) if probe.major >= required && probe.bits != 32 => {
+                let installation = JavaInstallation {
+                    home: existing
+                        .parent()
+                        .and_then(Path::parent)
+                        .unwrap_or(&existing)
+                        .to_path_buf(),
+                    java_exe: existing,
+                    major: probe.major,
+                    version: probe.version,
+                    bits: probe.bits,
+                    origin: JavaOrigin::Downloaded,
+                };
+                save_cache(paths, &installation)?;
+                tracing::info!(
+                    java = %installation.java_exe.display(),
+                    major = installation.major,
+                    "reusing the previously extracted Temurin"
+                );
+                return Ok(installation);
+            }
+            Ok(probe) => tracing::warn!(
+                major = probe.major,
+                bits = probe.bits,
+                required,
+                "extracted Java is unusable, reinstalling"
+            ),
+            Err(error) => tracing::warn!(
+                %error,
+                path = %extract_dir.display(),
+                "extracted Java does not start, reinstalling"
+            ),
+        }
+        if let Err(error) = tokio::fs::remove_dir_all(&extract_dir).await {
+            tracing::warn!(%error, path = %extract_dir.display(), "cannot drop the broken Java folder");
+        }
+    }
+
     tracing::info!(
         required,
         "no suitable Java found, downloading Eclipse Temurin"
@@ -594,39 +639,42 @@ async fn download_temurin(
     );
     downloader.download_many(vec![task], progress).await?;
 
-    let extract_dir = paths.java_dir().join(format!("temurin-{required}"));
-    let existing = find_java_executable(&extract_dir);
-    let java_exe = match existing {
-        Some(path) => path,
-        None => {
-            if cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
-                return Err(JavaError::Cancelled);
-            }
-            tokio::fs::create_dir_all(&extract_dir)
-                .await
-                .map_err(|source| JavaError::Io {
-                    path: extract_dir.clone(),
-                    source,
-                })?;
-            let zip = archive.clone();
-            let dest = extract_dir.clone();
-            let cancel_for_extract = cancel.clone();
-            tokio::task::spawn_blocking(move || {
-                safe_extract_zip_with_cancel(&zip, &dest, cancel_for_extract.as_ref())
-            })
-            .await
-            .map_err(|error| JavaError::Adoptium(format!("extract task failed: {error}")))??;
-            find_java_executable(&extract_dir).ok_or(JavaError::MissingExecutable)?
+    // Extract, then probe. A corrupt download can unpack into a folder that
+    // looks complete but has no working `java`, so one clean retry follows a
+    // failed probe before the error is surfaced.
+    let mut probe = None;
+    let mut java_exe = PathBuf::new();
+    for attempt in 0..2 {
+        if attempt > 0 {
+            tracing::warn!(
+                path = %extract_dir.display(),
+                "the extracted Java is unusable, extracting the archive again"
+            );
         }
-    };
-
-    let probe = probe_java(&java_exe).await?;
-    if probe.major < required {
-        return Err(JavaError::Adoptium(format!(
-            "скачалась Java {}, а нужна {required}+",
-            probe.major
-        )));
+        java_exe = install_from_archive(&archive, &extract_dir, cancel.clone()).await?;
+        match probe_java(&java_exe).await {
+            Ok(result) if result.major >= required && result.bits != 32 => {
+                probe = Some(result);
+                break;
+            }
+            Ok(result) => tracing::warn!(
+                major = result.major,
+                bits = result.bits,
+                required,
+                "extracted Java does not match the required version"
+            ),
+            Err(error) => tracing::warn!(
+                %error,
+                java = %java_exe.display(),
+                "extracted Java does not start"
+            ),
+        }
     }
+    let probe = probe.ok_or_else(|| {
+        JavaError::Adoptium(format!(
+            "скачалась непригодная Java, нужна {required}+ (64-bit)"
+        ))
+    })?;
 
     let home = java_exe
         .parent()
@@ -658,6 +706,41 @@ async fn download_temurin(
         "Temurin installed"
     );
     Ok(installation)
+}
+
+/// Clears the target folder and unpacks the Temurin archive into it. The
+/// folder is removed first so files from a broken or older runtime cannot be
+/// mixed into the new one.
+async fn install_from_archive(
+    archive: &Path,
+    extract_dir: &Path,
+    cancel: Option<CancelToken>,
+) -> Result<PathBuf, JavaError> {
+    if cancel.as_ref().is_some_and(CancelToken::is_cancelled) {
+        return Err(JavaError::Cancelled);
+    }
+    match tokio::fs::remove_dir_all(extract_dir).await {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(source) => {
+            return Err(JavaError::Io {
+                path: extract_dir.to_path_buf(),
+                source,
+            })
+        }
+    }
+    tokio::fs::create_dir_all(extract_dir)
+        .await
+        .map_err(|source| JavaError::Io {
+            path: extract_dir.to_path_buf(),
+            source,
+        })?;
+    let zip = archive.to_path_buf();
+    let dest = extract_dir.to_path_buf();
+    tokio::task::spawn_blocking(move || safe_extract_zip_with_cancel(&zip, &dest, cancel.as_ref()))
+        .await
+        .map_err(|error| JavaError::Adoptium(format!("extract task failed: {error}")))??;
+    find_java_executable(extract_dir).ok_or(JavaError::MissingExecutable)
 }
 
 async fn fetch_adoptium_assets(

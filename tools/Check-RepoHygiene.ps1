@@ -25,8 +25,8 @@ $failures = [System.Collections.Generic.List[string]]::new()
 $maxBytes = 20 * 1024 * 1024
 
 $artifactPatterns = @(
-    @{ Pattern = '^(?:target|launcher_data|dist)/'; Reason = 'build/runtime directory' },
-    @{ Pattern = '/(?:target|launcher_data|dist)/'; Reason = 'build/runtime directory' },
+    @{ Pattern = '^(?:target|launcher_data|dist|pack)/'; Reason = 'build/runtime directory' },
+    @{ Pattern = '/(?:target|launcher_data|dist|pack)/'; Reason = 'build/runtime directory' },
     @{ Pattern = '\.(?:pdb|log)$'; Reason = 'debug/log artifact' },
     @{ Pattern = '/OdiumLauncher-[^/]+\.zip$'; Reason = 'generated player ZIP' },
     @{ Pattern = '/manifest\.local\.json$'; Reason = 'generated local manifest' },
@@ -63,7 +63,6 @@ foreach ($file in $tracked) {
     if ($skipSecretScan -contains $file) { continue }
     $extension = [System.IO.Path]::GetExtension($file).ToLowerInvariant()
     if ($extension -and $textExtensions -notcontains $extension) { continue }
-    if ($file -like 'pack/*') { continue }
     $path = Join-Path $root $file
     $item = Get-Item -LiteralPath $path -ErrorAction SilentlyContinue
     if (-not $item -or $item.Length -gt 2 * 1024 * 1024) { continue }

@@ -277,6 +277,12 @@ struct Reader<'a> {
 }
 
 impl Reader<'_> {
+    /// Bytes left in the document. Used to size list allocations: a header may
+    /// claim a million entries while the payload holds a few dozen bytes.
+    fn remaining(&self) -> usize {
+        self.data.len().saturating_sub(self.position)
+    }
+
     fn take(&mut self, length: usize) -> Result<&[u8], String> {
         let end = self
             .position
@@ -334,6 +340,23 @@ impl Reader<'_> {
     }
 }
 
+/// Smallest possible encoding of one value of `tag`, in bytes. A list cannot
+/// hold more elements than the remaining payload divided by this, so a hostile
+/// length never turns into a multi-megabyte `Vec` reservation.
+fn min_payload_size(tag: u8) -> usize {
+    match tag {
+        1 => 1,
+        2 => 2,
+        3 | 5 | 11 => 4,
+        4 | 6 | 12 => 8,
+        7 => 4,
+        8 => 2,
+        9 => 5,
+        // A compound is at least its TAG_End byte.
+        _ => 1,
+    }
+}
+
 fn read_payload(reader: &mut Reader<'_>, tag: u8, depth: u8) -> Result<Nbt, String> {
     if depth > MAX_DEPTH {
         return Err("слишком глубокая вложенность NBT".to_owned());
@@ -359,7 +382,20 @@ fn read_payload(reader: &mut Reader<'_>, tag: u8, depth: u8) -> Result<Nbt, Stri
             if length < 0 || length as usize > MAX_LIST {
                 return Err("некорректная длина списка NBT".to_owned());
             }
-            let mut items = Vec::with_capacity(length as usize);
+            // An empty list legitimately carries TAG_End as its element type;
+            // a non-empty one must name a real tag, otherwise the first entry
+            // would be parsed as a terminator.
+            if element_type > 12 {
+                return Err(format!(
+                    "неизвестный тип элемента списка NBT: {element_type}"
+                ));
+            }
+            if length > 0 && element_type == 0 {
+                return Err("список NBT без типа элемента".to_owned());
+            }
+            let capacity =
+                (length as usize).min(reader.remaining() / min_payload_size(element_type).max(1));
+            let mut items = Vec::with_capacity(capacity);
             for _ in 0..length {
                 items.push(read_payload(reader, element_type, depth + 1)?);
             }
@@ -383,7 +419,8 @@ fn read_payload(reader: &mut Reader<'_>, tag: u8, depth: u8) -> Result<Nbt, Stri
             if length < 0 || length as usize > MAX_LIST {
                 return Err("некорректная длина int array".to_owned());
             }
-            let mut values = Vec::with_capacity(length as usize);
+            let capacity = (length as usize).min(reader.remaining() / 4);
+            let mut values = Vec::with_capacity(capacity);
             for _ in 0..length {
                 values.push(reader.i32()?);
             }
@@ -394,7 +431,8 @@ fn read_payload(reader: &mut Reader<'_>, tag: u8, depth: u8) -> Result<Nbt, Stri
             if length < 0 || length as usize > MAX_LIST {
                 return Err("некорректная длина long array".to_owned());
             }
-            let mut values = Vec::with_capacity(length as usize);
+            let capacity = (length as usize).min(reader.remaining() / 8);
+            let mut values = Vec::with_capacity(capacity);
             for _ in 0..length {
                 values.push(reader.i64()?);
             }
@@ -538,6 +576,49 @@ mod tests {
         let compressed = encoder.finish().expect("finish");
         let error = decode_limited(&compressed, 64).expect_err("must reject");
         assert!(error.contains("лимит"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn empty_list_roundtrips_with_tag_end_type() {
+        let mut fields = BTreeMap::new();
+        fields.insert("servers".to_owned(), Nbt::List(Vec::new()));
+        let root = Nbt::Compound(fields);
+        let bytes = encode(&root).expect("encode");
+        // root TAG_Compound, empty name, then a TAG_List named "servers" with
+        // TAG_End as its element type, zero length and the final TAG_End.
+        assert_eq!(&bytes[..4], &[10, 0, 0, 9]);
+        assert_eq!(&bytes[4..6], &[0, 7]);
+        assert_eq!(&bytes[6..13], b"servers");
+        assert_eq!(bytes[13], 0, "empty list must use TAG_End as element type");
+        assert_eq!(&bytes[14..18], &[0, 0, 0, 0]);
+        assert_eq!(bytes[18], 0);
+        assert_eq!(bytes.len(), 19);
+        assert_eq!(decode(&bytes).expect("decode"), root);
+    }
+
+    #[test]
+    fn hostile_list_length_does_not_reserve_memory() {
+        // A root compound holding a list that claims 1_000_000 entries but
+        // ends right after the header: parsing must fail quickly instead of
+        // allocating room for a million values.
+        let mut raw = vec![10, 0, 0, 9, 0, 4];
+        raw.extend_from_slice(b"list");
+        raw.push(10);
+        raw.extend_from_slice(&1_000_000i32.to_be_bytes());
+        // No entries follow the header.
+        let error = decode(&raw).expect_err("must reject");
+        assert!(error.contains("конец NBT"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn list_without_an_element_type_is_rejected() {
+        let mut raw = vec![10, 0, 0, 9, 0, 4];
+        raw.extend_from_slice(b"list");
+        raw.push(0);
+        raw.extend_from_slice(&1i32.to_be_bytes());
+        raw.push(0);
+        let error = decode(&raw).expect_err("must reject");
+        assert!(error.contains("без типа"), "unexpected error: {error}");
     }
 
     #[test]

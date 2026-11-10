@@ -6,8 +6,10 @@
 //! widget helpers below branch on the palette/bevel style so every control is
 //! drawn consistently instead of relying on egui defaults.
 
+use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 use egui::{
     Align2, Color32, FontData, FontDefinitions, FontFamily, FontId, Pos2, Rect, Response, Sense,
@@ -660,33 +662,115 @@ fn window_shadow(theme: Theme) -> egui::epaint::Shadow {
     }
 }
 
+/// System fonts, read at most once per process. Every theme switch used to read
+/// the same few megabytes from disk on the UI thread and copy them into
+/// `FontData`; the cache keeps one copy and lets `FontData::from_static` borrow
+/// it, so switching themes costs no I/O and no allocation.
+///
+/// The keys are the literal font paths, which are always `'static`, and the
+/// leaked buffers live until the process exits.
+type FontCache = Mutex<HashMap<&'static str, Option<&'static [u8]>>>;
+
+static FONT_CACHE: OnceLock<FontCache> = OnceLock::new();
+
+#[cfg(windows)]
+fn ui_font_paths(theme: Theme) -> &'static [&'static str] {
+    match theme {
+        // Windows 98 keeps Microsoft Sans Serif for its bitmap-font silhouette.
+        Theme::Win98 => &[r"C:\Windows\Fonts\micross.ttf"],
+        // Windows 11 prefers Segoe UI Variable, falling back to the classic
+        // Segoe UI on older builds that do not ship the variable font.
+        Theme::Win11 => &[
+            r"C:\Windows\Fonts\SegUIVar.ttf",
+            r"C:\Windows\Fonts\segoeui.ttf",
+        ],
+        _ => &[r"C:\Windows\Fonts\segoeui.ttf"],
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn ui_font_paths(_theme: Theme) -> &'static [&'static str] {
+    &["/System/Library/Fonts/Supplemental/Arial.ttf"]
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn ui_font_paths(_theme: Theme) -> &'static [&'static str] {
+    &["/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"]
+}
+
+#[cfg(windows)]
+fn mono_font_path() -> &'static str {
+    r"C:\Windows\Fonts\consola.ttf"
+}
+
+#[cfg(target_os = "macos")]
+fn mono_font_path() -> &'static str {
+    "/System/Library/Fonts/Supplemental/Courier New.ttf"
+}
+
+#[cfg(all(not(windows), not(target_os = "macos")))]
+fn mono_font_path() -> &'static str {
+    "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+}
+
+/// Reads every system font the launcher may need. Call once from a worker
+/// thread at startup: the first theme switch then happens without touching the
+/// disk, and a missing font is remembered instead of being retried per frame.
+pub fn warm_fonts() {
+    #[cfg(windows)]
+    let paths: &[&'static str] = &[
+        r"C:\Windows\Fonts\micross.ttf",
+        r"C:\Windows\Fonts\SegUIVar.ttf",
+        r"C:\Windows\Fonts\segoeui.ttf",
+        mono_font_path(),
+    ];
+    #[cfg(target_os = "macos")]
+    let paths: &[&'static str] = &[
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Supplemental/Courier New.ttf",
+    ];
+    #[cfg(all(not(windows), not(target_os = "macos")))]
+    let paths: &[&'static str] = &[
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
+    ];
+    for path in paths {
+        let _ = cached_font(path);
+    }
+}
+
+/// Returns the bytes of `path`, reading the file on first use only. The read
+/// happens under the cache lock, so the font file cannot be loaded twice in
+/// parallel by the startup warm-up and the first frame.
+fn cached_font(path: &'static str) -> Option<&'static [u8]> {
+    let cache = FONT_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut entries = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some(cached) = entries.get(path) {
+        return *cached;
+    }
+    let bytes = read_font(path).map(|bytes| &*Box::leak(bytes.into_boxed_slice()));
+    entries.insert(path, bytes);
+    bytes
+}
+
 fn install_system_fonts(ctx: &egui::Context, theme: Theme) {
     let mut fonts = FontDefinitions::default();
 
-    // Windows 98 keeps Microsoft Sans Serif for its bitmap-font silhouette.
-    // Modern themes use Segoe UI; Windows 11 prefers Segoe UI Variable when the
-    // font is present, falling back to the classic Segoe UI otherwise.
-    // Other platforms use their native UI font when one can be loaded.
-    #[cfg(windows)]
-    let ui_path = match theme {
-        Theme::Win98 => "C:\\Windows\\Fonts\\micross.ttf",
-        Theme::Win11 if Path::new("C:\\Windows\\Fonts\\SegUIVar.ttf").exists() => {
-            "C:\\Windows\\Fonts\\SegUIVar.ttf"
-        }
-        _ => "C:\\Windows\\Fonts\\segoeui.ttf",
-    };
-    #[cfg(target_os = "macos")]
-    let ui_path = "/System/Library/Fonts/Supplemental/Arial.ttf";
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    let ui_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf";
     let ui_name = match theme {
         Theme::Win98 => "win98-ui",
         _ => "theme-ui",
     };
-    if let Some(bytes) = read_font(ui_path) {
+    // The first candidate that exists wins; a missing Segoe UI Variable is a
+    // cache hit after the warm-up rather than an `exists()` call per frame.
+    if let Some(bytes) = ui_font_paths(theme)
+        .iter()
+        .find_map(|path| cached_font(path))
+    {
         fonts
             .font_data
-            .insert(ui_name.to_owned(), FontData::from_owned(bytes));
+            .insert(ui_name.to_owned(), FontData::from_static(bytes));
         fonts
             .families
             .entry(FontFamily::Proportional)
@@ -694,16 +778,10 @@ fn install_system_fonts(ctx: &egui::Context, theme: Theme) {
             .insert(0, ui_name.to_owned());
     }
 
-    #[cfg(windows)]
-    let mono_path = "C:\\Windows\\Fonts\\consola.ttf";
-    #[cfg(target_os = "macos")]
-    let mono_path = "/System/Library/Fonts/Supplemental/Courier New.ttf";
-    #[cfg(all(not(windows), not(target_os = "macos")))]
-    let mono_path = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf";
-    if let Some(bytes) = read_font(mono_path) {
+    if let Some(bytes) = cached_font(mono_font_path()) {
         fonts
             .font_data
-            .insert("theme-mono".to_owned(), FontData::from_owned(bytes));
+            .insert("theme-mono".to_owned(), FontData::from_static(bytes));
         fonts
             .families
             .entry(FontFamily::Monospace)
@@ -715,6 +793,7 @@ fn install_system_fonts(ctx: &egui::Context, theme: Theme) {
 }
 
 fn read_font(path: &str) -> Option<Vec<u8>> {
+    // `Path` is only used here; the rest of the module works on string paths.
     match std::fs::read(Path::new(path)) {
         Ok(bytes) => Some(bytes),
         Err(error) => {

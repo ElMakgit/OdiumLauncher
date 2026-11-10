@@ -40,11 +40,28 @@ pub(crate) struct PublisherState {
     pub(crate) busy: bool,
     pub(crate) progress: f32,
     pub(crate) log: Vec<String>,
+    /// `log` joined once per added line instead of once per frame.
+    pub(crate) log_text: String,
     rx: Option<mpsc::UnboundedReceiver<PublisherEvent>>,
+    /// Result of reading the selected pack, delivered off the UI thread.
+    info_rx: Option<mpsc::UnboundedReceiver<(PathBuf, Option<PackInfo>)>>,
     pub(crate) result: Option<Result<String, String>>,
 }
 
 impl PublisherState {
+    pub(crate) fn push_log(&mut self, line: String) {
+        if !self.log_text.is_empty() {
+            self.log_text.push('\n');
+        }
+        self.log_text.push_str(&line);
+        self.log.push(line);
+    }
+
+    pub(crate) fn clear_log(&mut self) {
+        self.log.clear();
+        self.log_text.clear();
+    }
+
     pub(crate) fn new() -> Self {
         Self {
             open: false,
@@ -64,7 +81,9 @@ impl PublisherState {
             busy: false,
             progress: 0.0,
             log: Vec::new(),
+            log_text: String::new(),
             rx: None,
+            info_rx: None,
             result: None,
         }
     }
@@ -88,45 +107,82 @@ impl LauncherApp {
         }
         if disconnected {
             self.publisher.rx = None;
+            // The publish task ends with `Done`. A channel that closes without
+            // it means the task died (panic, runtime shutdown): without this
+            // the window stayed in "Публикация…" forever.
+            if self.publisher.busy {
+                self.publisher.busy = false;
+                self.publisher.progress = 0.0;
+                self.publisher.result = Some(Err("Публикация прервалась неожиданно".to_owned()));
+            }
         }
         for event in events {
             match event {
-                PublisherEvent::Log(line) => self.publisher.log.push(line),
+                PublisherEvent::Log(line) => self.publisher.push_log(line),
                 PublisherEvent::Progress(value) => self.publisher.progress = value,
                 PublisherEvent::Done(result) => {
                     self.publisher.busy = false;
                     self.publisher.progress = 1.0;
                     if let Ok(message) = &result {
-                        self.publisher.log.push(message.clone());
+                        let message = message.clone();
+                        self.publisher.push_log(message);
                     }
                     self.publisher.result = Some(result);
                 }
             }
         }
+        self.poll_pack_info();
         if self.publisher.busy {
             ctx.request_repaint_after(Duration::from_millis(150));
         }
     }
 
-    pub(crate) fn set_publisher_path(&mut self, path: PathBuf) {
-        let info = read_pack_info(&path);
-        if let Some(info) = &info {
-            if self.publisher.release_name.trim().is_empty() {
-                self.publisher.release_name =
-                    format!("{} {}", info.name, info.version).trim().to_owned();
+    /// Applies the pack info once the blocking read finished. The path is
+    /// compared so a slow read of a previously selected file cannot overwrite
+    /// the facts of the file the user picked afterwards.
+    fn poll_pack_info(&mut self) {
+        let Some(mut receiver) = self.publisher.info_rx.take() else {
+            return;
+        };
+        match receiver.try_recv() {
+            Ok((path, info)) => {
+                if self.publisher.path == path.display().to_string() {
+                    if let Some(info) = &info {
+                        if self.publisher.release_name.trim().is_empty() {
+                            self.publisher.release_name =
+                                format!("{} {}", info.name, info.version).trim().to_owned();
+                        }
+                        if self.publisher.tag.trim().is_empty() && !info.version.is_empty() {
+                            self.publisher.tag = format!("v{}", info.version);
+                        }
+                    }
+                    self.publisher.info = info;
+                }
             }
-            if self.publisher.tag.trim().is_empty() && !info.version.is_empty() {
-                self.publisher.tag = format!("v{}", info.version);
+            Err(tokio::sync::mpsc::error::TryRecvError::Empty) => {
+                self.publisher.info_rx = Some(receiver);
             }
+            Err(tokio::sync::mpsc::error::TryRecvError::Disconnected) => {}
         }
+    }
+
+    pub(crate) fn set_publisher_path(&mut self, path: PathBuf) {
+        self.publisher.path = path.display().to_string();
+        self.publisher.path_is_dir = path.is_dir();
         if self.publisher.output_dir.trim().is_empty() {
             self.publisher.output_dir = default_dist_dir(&path).display().to_string();
         }
-        self.publisher.path = path.display().to_string();
-        self.publisher.path_is_dir = path.is_dir();
-        self.publisher.info = info;
-        self.publisher.log.clear();
+        self.publisher.info = None;
+        self.publisher.clear_log();
         self.publisher.result = None;
+        // Reading a manifest or opening a .mrpack zip touches the disk, so it
+        // runs on a worker and the panel shows no facts until it arrives.
+        let (tx, rx) = mpsc::unbounded_channel();
+        self.publisher.info_rx = Some(rx);
+        self.runtime.spawn_blocking(move || {
+            let info = read_pack_info(&path);
+            let _ = tx.send((path, info));
+        });
     }
 
     fn dist_output_dir(&self) -> Option<PathBuf> {
@@ -190,17 +246,23 @@ impl LauncherApp {
         }
 
         let is_dir = path.is_dir();
-        let info = read_pack_info(&path);
         let exe = std::env::current_exe().ok();
         let runtime = self.runtime.clone();
         let (tx, rx) = mpsc::unbounded_channel();
         self.publisher.rx = Some(rx);
         self.publisher.busy = true;
         self.publisher.progress = 0.0;
-        self.publisher.log.clear();
+        self.publisher.clear_log();
         self.publisher.result = None;
 
         runtime.spawn(async move {
+            // Same read as the preview, but the upload must not depend on the
+            // preview having finished: derive the tag and release name here.
+            let info_path = path.clone();
+            let info = tokio::task::spawn_blocking(move || read_pack_info(&info_path))
+                .await
+                .ok()
+                .flatten();
             let report_tx = tx.clone();
             let report = move |progress: PublishProgress| match progress {
                 PublishProgress::Stage(text) => {
@@ -548,16 +610,25 @@ impl LauncherApp {
                         .max_height(170.0)
                         .stick_to_bottom(true)
                         .show(ui, |ui| {
-                            let text = if self.publisher.log.is_empty() {
-                                "Здесь появится журнал публикации.".to_owned()
-                            } else {
-                                self.publisher.log.join("\n")
-                            };
-                            ui.add(
-                                egui::Label::new(RichText::new(text).monospace())
+                            if self.publisher.log.is_empty() {
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new("Здесь появится журнал публикации.")
+                                            .monospace(),
+                                    )
                                     .selectable(true)
                                     .wrap(),
-                            );
+                                );
+                            } else {
+                                // Joined once per added line, not per frame.
+                                ui.add(
+                                    egui::Label::new(
+                                        RichText::new(&self.publisher.log_text).monospace(),
+                                    )
+                                    .selectable(true)
+                                    .wrap(),
+                                );
+                            }
                         });
                 });
 
@@ -606,7 +677,7 @@ impl LauncherApp {
             }
         }
         if copy_log {
-            ctx.copy_text(self.publisher.log.join("\n"));
+            ctx.copy_text(self.publisher.log_text.clone());
         }
     }
 }

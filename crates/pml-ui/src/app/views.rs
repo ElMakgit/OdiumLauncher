@@ -9,15 +9,15 @@ use super::LauncherApp;
 
 impl LauncherApp {
     pub(crate) fn draw_sources(&mut self, ui: &mut egui::Ui) {
-        let sources = self.store.config().sources.clone();
         // A distributed pack ships exactly one source; showing a one-item list
         // only confuses the player, so the manifest panel takes its place.
-        if sources.len() <= 1 {
+        if self.sources.len() <= 1 {
             return;
         }
         pml_theme::group_box(ui, self.theme, "Профили", |ui| {
             let mut clicked = None;
-            for source in &sources {
+            for index in 0..self.sources.len() {
+                let source = &self.sources[index];
                 let selected = source.id == self.source_id;
                 let (rect, response) =
                     ui.allocate_exact_size(Vec2::new(ui.available_width(), 22.0), Sense::click());
@@ -47,55 +47,40 @@ impl LauncherApp {
                     },
                 );
                 if response.clicked() {
-                    clicked = Some(source.id.clone());
+                    clicked = Some(index);
                 }
             }
-            if let Some(id) = clicked {
+            if let Some(index) = clicked {
+                let id = self.sources[index].id.clone();
                 self.select_source(&id);
             }
         });
     }
 
     pub(crate) fn draw_manifest_info(&mut self, ui: &mut egui::Ui) {
-        // Snapshot the facts before drawing: the panel closure later mutates
-        // `self` (overrides, refresh, reset), so it cannot hold a borrow of the
-        // manifest at the same time.
-        let facts = self.manifest.as_ref().map(|manifest| {
-            let optional = manifest.optional_files.len();
-            (
-                manifest.name.clone(),
-                manifest.version.clone(),
-                manifest.mc_version.clone(),
-                format!(
-                    "{} {}",
-                    manifest.loader.kind.label(),
-                    manifest.loader.version
-                ),
-                if optional == 0 {
-                    manifest.files.len().to_string()
-                } else {
-                    format!("{} + {} доп.", manifest.files.len(), optional)
-                },
-            )
-        });
+        // The facts are pre-formatted when the manifest changes; the panel only
+        // bumps the `Arc` instead of cloning five strings on every frame. It
+        // cannot borrow `self.manifest` directly because the closure later
+        // mutates `self` (overrides, refresh, reset).
+        let facts = self.facts.clone();
         let manifest_error = self.manifest_error.clone();
         let insecure_source = self
             .selected_source()
             .is_some_and(|source| source.manifest_url.starts_with("http://"));
 
         pml_theme::group_box(ui, self.theme, "Сборка", |ui| {
-            if let Some((name, version, minecraft, loader, files)) = &facts {
+            if let Some(facts) = &facts {
                 egui::Grid::new("pack_facts")
                     .num_columns(2)
                     .spacing([10.0, 3.0])
                     .show(ui, |ui| {
-                        fact(ui, self.theme, "Название", name);
-                        if !version.is_empty() {
-                            fact(ui, self.theme, "Версия", version);
+                        fact(ui, self.theme, "Название", &facts.name);
+                        if !facts.version.is_empty() {
+                            fact(ui, self.theme, "Версия", &facts.version);
                         }
-                        fact(ui, self.theme, "Minecraft", minecraft);
-                        fact(ui, self.theme, "Загрузчик", loader);
-                        fact(ui, self.theme, "Файлы", files);
+                        fact(ui, self.theme, "Minecraft", &facts.mc_version);
+                        fact(ui, self.theme, "Загрузчик", &facts.loader);
+                        fact(ui, self.theme, "Файлы", &facts.files);
                     });
             } else if let Some(error) = &manifest_error {
                 ui.colored_label(pml_theme::error_color(self.theme), "Манифест недоступен");
@@ -154,12 +139,12 @@ impl LauncherApp {
 
             // Optional components are part of the manifest contract; exposing
             // them here makes the stored per-source overrides discoverable.
-            let optional_files = self
+            let optional_count = self
                 .manifest
                 .as_ref()
-                .map(|manifest| manifest.optional_files.clone())
-                .unwrap_or_default();
-            if !optional_files.is_empty() {
+                .map(|manifest| manifest.optional_files.len())
+                .unwrap_or(0);
+            if optional_count > 0 {
                 ui.add_space(4.0);
                 ui.label(RichText::new("Дополнительные компоненты").strong());
                 let source_id = self.source_id.clone();
@@ -175,7 +160,16 @@ impl LauncherApp {
                     .max_height(96.0)
                     .auto_shrink([false, true])
                     .show(ui, |ui| {
-                        for file in &optional_files {
+                        // Indexed access instead of a cloned list: the panel
+                        // runs every frame, the manifest changes rarely.
+                        for index in 0..optional_count {
+                            let Some(file) = self
+                                .manifest
+                                .as_ref()
+                                .and_then(|manifest| manifest.optional_files.get(index))
+                            else {
+                                break;
+                            };
                             let path = pml_modpack::normalize_path(&file.path);
                             let mut enabled = overrides.get(&path).copied().unwrap_or(true);
                             if pml_theme::checkbox(ui, self.theme, &mut enabled, &path, true)
@@ -345,9 +339,10 @@ impl LauncherApp {
                         } else {
                             // A single selectable label keeps selection working
                             // across lines and enables Ctrl+C / the context menu.
-                            let text = self.log_lines.join("\n");
+                            // `log_text` is joined once per update, not per frame.
                             ui.add(
-                                egui::Label::new(RichText::new(text).monospace()).selectable(true),
+                                egui::Label::new(RichText::new(&self.log_text).monospace())
+                                    .selectable(true),
                             );
                         }
                     });
@@ -360,7 +355,7 @@ impl LauncherApp {
                 if pml_theme::button(ui, self.theme, "Копировать", !self.log_lines.is_empty())
                     .clicked()
                 {
-                    ui.ctx().copy_text(self.log_lines.join("\r\n"));
+                    ui.ctx().copy_text(self.log_text.clone());
                 }
             });
         });

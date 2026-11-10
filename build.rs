@@ -15,7 +15,7 @@ fn main() {
     resource.set("ProductName", pml_brand());
     resource.set("FileDescription", pml_brand());
     resource.set("CompanyName", "Odium Launcher contributors");
-    resource.set("LegalCopyright", "MIT licensed");
+    resource.set("LegalCopyright", "0BSD licensed");
     resource.set("OriginalFilename", "OdiumLauncher.exe");
     if let Err(error) = resource.compile() {
         // A missing Windows SDK resource compiler must not break the build on

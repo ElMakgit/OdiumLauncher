@@ -10,6 +10,7 @@
 | `Publish-Pack.ps1` | переписать URL, запушить в GitHub, собрать `dist/` + ZIP | legacy-обёртка |
 | `Check-RepoHygiene.ps1` | запретить артефакты/секреты в git | CI |
 | `capture_window.ps1` | снимок окна для проверки UI | dev |
+| `Measure-Memory.ps1` | private bytes и working set релизной сборки | release |
 | `fetch-offline-bundles.ps1` | скачать и сверить архивы NeoForge для встраивания в exe | release |
 | `package-macos.sh` | universal `.app` + `.dmg` (macOS) | CI/release |
 | `generate-third-party-notices.py` | собрать `THIRD-PARTY-NOTICES.md` | release |
@@ -90,15 +91,31 @@ python tools/generate-third-party-notices.py
 powershell -ExecutionPolicy Bypass -File .\tools\Check-RepoHygiene.ps1
 ```
 
-Падает, если в индексе есть `target/`, `launcher_data/`, `dist/`, `*.exe`,
-`*.dll`, `*.pdb`, `*.log`, сгенерированные ZIP/`manifest.local.json`, файл
-больше 20 MiB или строка, похожая на GitHub-токен/приватный ключ. Запускается
-в CI до сборки.
+Падает, если в индексе есть `target/`, `launcher_data/`, `dist/`, `pack/`,
+`*.exe`, `*.dll`, `*.pdb`, `*.log`, сгенерированные ZIP/`manifest.local.json`,
+файл больше 20 MiB или строка, похожая на GitHub-токен/приватный ключ.
+Запускается в CI до сборки.
+
+## Measure-Memory.ps1
+
+```powershell
+cargo build --release
+.\Measure-Memory.ps1 -Label idle -Seconds 30
+.\Measure-Memory.ps1 -Scenarios -IdleSeconds 30 -PeakSeconds 15
+```
+
+Первый запуск даёт одну цифру (min/median/p95/max для private bytes и working
+set), `-Scenarios` прогоняет весь набор: простой, окно на весь экран, возврат
+к обычному размеру и 20 циклов свернуть/развернуть. Скрипт сам ждёт появления
+окна и прогрева первого кадра; `-KeepRunning` оставляет процесс открытым,
+`-ProcessId` подключается к уже запущенному. Результаты 0.1.6 и бюджет — в
+[docs/memory.md](../docs/memory.md).
 
 ## capture_window.ps1
 
-Вспомогательный снимок окна по заголовку для проверки темы/вёрстки. Не входит в
-продуктовый пайплайн.
+Вспомогательный снимок окна для проверки темы/вёрстки: находит самое большое
+видимое окно процесса (у winit есть служебные окна 16×16) и сохраняет PNG. Не
+входит в продуктовый пайплайн.
 
 ## fetch-offline-bundles.ps1
 

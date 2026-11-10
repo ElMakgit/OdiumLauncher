@@ -69,6 +69,38 @@ fn validate_artifact_url(url: &str) -> Result<(), MinecraftError> {
     }
 }
 
+/// Asset object names are SHA-1 digests and become both a URL path and two
+/// directory components. Accepting only 40 lowercase hex characters keeps a
+/// malicious index from reaching outside `assets/objects` or panicking on a
+/// multi-byte UTF-8 boundary when the two-character prefix is sliced.
+fn validate_asset_hash(hash: &str) -> Result<&str, MinecraftError> {
+    if hash.len() != 40 || !hash.chars().all(|character| character.is_ascii_hexdigit()) {
+        return Err(MinecraftError::InvalidAssetHash(hash.to_owned()));
+    }
+    Ok(hash)
+}
+
+/// Version, asset-index and logging-config ids are written as a single path
+/// component. Anything with separators, drive prefixes or `..` is rejected
+/// before it can escape the versions/assets tree.
+fn validate_path_id(field: &str, value: &str) -> Result<String, MinecraftError> {
+    let valid = !value.is_empty()
+        && value.len() <= 96
+        && value != "."
+        && value != ".."
+        && value.chars().all(|character| {
+            character.is_ascii_alphanumeric() || matches!(character, '.' | '_' | '+' | '-')
+        });
+    if valid {
+        Ok(value.to_owned())
+    } else {
+        Err(MinecraftError::InvalidId {
+            field: field.to_owned(),
+            value: value.to_owned(),
+        })
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct VersionJson {
@@ -588,7 +620,7 @@ impl Minecraft {
         let dest = self
             .paths
             .versions_dir()
-            .join(version_id)
+            .join(validate_path_id("version_id", version_id)?)
             .join(format!("{version_id}.jar"));
         let source_len = tokio::fs::metadata(client_jar)
             .await
@@ -622,11 +654,12 @@ impl Minecraft {
             .as_ref()
             .ok_or(MinecraftError::MissingField("assetIndex"))?;
         validate_artifact_url(&index_meta.url)?;
+        let index_id = validate_path_id("assetIndex.id", &index_meta.id)?;
         let index_path = self
             .paths
             .assets_dir()
             .join("indexes")
-            .join(format!("{}.json", index_meta.id));
+            .join(format!("{index_id}.json"));
         let index_task = DownloadTask::new(
             index_meta.url.clone(),
             index_path.clone(),
@@ -651,21 +684,19 @@ impl Minecraft {
 
         let mut tasks = Vec::with_capacity(index.objects.len());
         for (name, object) in &index.objects {
-            if object.hash.len() < 2 {
-                return Err(MinecraftError::InvalidAssetHash(object.hash.clone()));
-            }
-            let prefix = &object.hash[..2];
+            let hash = validate_asset_hash(&object.hash)?;
+            let prefix = &hash[..2];
             let dest = self
                 .paths
                 .assets_dir()
                 .join("objects")
                 .join(prefix)
-                .join(&object.hash);
-            let url = format!("{ASSET_BASE_URL}/{prefix}/{}", object.hash);
+                .join(hash);
+            let url = format!("{ASSET_BASE_URL}/{prefix}/{hash}");
             tasks.push(DownloadTask::new(
                 url,
                 dest,
-                Some(object.hash.clone()),
+                Some(hash.to_owned()),
                 HashAlgo::Sha1,
                 Some(object.size),
                 name.clone(),
@@ -676,7 +707,7 @@ impl Minecraft {
                 .download_many(tasks, progress.clone())
                 .await?;
         }
-        self.materialize_virtual_assets(&index, &index_meta.id, instance_dir)
+        self.materialize_virtual_assets(&index, &index_id, instance_dir)
             .await?;
 
         let logging_arg =
@@ -685,11 +716,10 @@ impl Minecraft {
                     None
                 } else {
                     validate_artifact_url(&client.file.url)?;
-                    let file_id = client
-                        .file
-                        .id
-                        .clone()
-                        .unwrap_or_else(|| "client-log4j.xml".to_owned());
+                    let file_id = match client.file.id.as_deref() {
+                        Some(id) if !id.is_empty() => validate_path_id("logging.id", id)?,
+                        _ => "client-log4j.xml".to_owned(),
+                    };
                     let log_path = self.paths.assets_dir().join("log_configs").join(&file_id);
                     let task = DownloadTask::new(
                         client.file.url.clone(),
@@ -739,15 +769,16 @@ impl Minecraft {
                 tracing::warn!(asset = name, "skipping unsafe virtual asset name");
                 continue;
             }
-            if object.hash.len() < 2 {
+            let Ok(hash) = validate_asset_hash(&object.hash) else {
+                tracing::warn!(asset = name, "skipping virtual asset with an invalid hash");
                 continue;
-            }
+            };
             let source = self
                 .paths
                 .assets_dir()
                 .join("objects")
-                .join(&object.hash[..2])
-                .join(&object.hash);
+                .join(&hash[..2])
+                .join(hash);
             let dest = target_root.join(relative);
             if let Some(parent) = dest.parent() {
                 tokio::fs::create_dir_all(parent)
@@ -787,15 +818,17 @@ impl Minecraft {
         let mut tasks = Vec::new();
         let instance_libraries = instance_dir.join("libraries");
 
+        let os = host_os();
+        let arch = host_arch();
         for library in version
             .libraries
             .iter()
             .filter(|lib| rules_allow(&lib.rules))
         {
-            if wrong_arch_native(&library.name) {
+            if wrong_arch_native(&library.name, os, arch) {
                 continue;
             }
-            for artifact in resolve_library(library)? {
+            for artifact in resolve_library(library, os, arch)? {
                 if artifact.path.is_empty() {
                     continue;
                 }
@@ -831,10 +864,7 @@ impl Minecraft {
                     ));
                 }
 
-                if artifact.classpath
-                    && !wrong_arch_native(&library.name)
-                    && seen_classpath.insert(destination.clone())
-                {
+                if artifact.classpath && seen_classpath.insert(destination.clone()) {
                     classpath.push(destination.clone());
                 }
                 if artifact.native && seen_natives.insert(destination.clone()) {
@@ -934,7 +964,11 @@ struct ResolvedArtifact {
     native: bool,
 }
 
-fn resolve_library(library: &Library) -> Result<Vec<ResolvedArtifact>, MinecraftError> {
+fn resolve_library(
+    library: &Library,
+    os: &str,
+    arch: &str,
+) -> Result<Vec<ResolvedArtifact>, MinecraftError> {
     let base = library.url.as_deref().unwrap_or(DEFAULT_MAVEN_BASE);
     let base = if base.ends_with('/') {
         base.to_owned()
@@ -958,13 +992,13 @@ fn resolve_library(library: &Library) -> Result<Vec<ResolvedArtifact>, Minecraft
                     sha1: artifact.sha1.clone().or_else(|| library.sha1.clone()),
                     size: artifact.size.or(library.size),
                     classpath: true,
-                    native: is_native_name(&library.name),
+                    native: is_native_name(&library.name, os),
                 });
             }
         }
 
         if let (Some(classifiers), Some(classifier)) =
-            (&downloads.classifiers, native_classifier(library))
+            (&downloads.classifiers, native_classifier(library, os, arch))
         {
             if let Some(artifact) = classifiers.get(&classifier) {
                 let coordinate = format!("{}:{classifier}", library.name);
@@ -974,6 +1008,7 @@ fn resolve_library(library: &Library) -> Result<Vec<ResolvedArtifact>, Minecraft
                     } else {
                         artifact.url.clone()
                     };
+                    validate_artifact_url(&url)?;
                     resolved.push(ResolvedArtifact {
                         path,
                         url,
@@ -997,7 +1032,7 @@ fn resolve_library(library: &Library) -> Result<Vec<ResolvedArtifact>, Minecraft
                 sha1: library.sha1.clone(),
                 size: library.size,
                 classpath: true,
-                native: is_native_name(&library.name),
+                native: is_native_name(&library.name, os),
             });
         }
     }
@@ -1026,38 +1061,86 @@ pub fn maven_path(name: &str) -> Option<String> {
     Some(format!("{group}/{artifact}/{version}/{file}"))
 }
 
-fn native_classifier(library: &Library) -> Option<String> {
-    let raw = library.natives.as_ref()?.get("windows")?;
-    let arch = if cfg!(target_arch = "x86_64") {
-        "64"
+/// Canonical Mojang OS name used in `rules` and in the `natives` map.
+fn host_os() -> &'static str {
+    if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "macos") {
+        "osx"
     } else {
-        "32"
-    };
+        "linux"
+    }
+}
+
+/// Architecture token a `natives` entry substitutes for `${arch}`. Legacy
+/// metadata only knows 32/64; modern ARM builds use the explicit `arm64` word.
+fn host_arch() -> &'static str {
+    match std::env::consts::ARCH {
+        "x86" => "32",
+        "aarch64" => "arm64",
+        _ => "64",
+    }
+}
+
+fn native_classifier(library: &Library, os: &str, arch: &str) -> Option<String> {
+    let raw = library.natives.as_ref()?.get(os)?;
     Some(raw.replace("${arch}", arch))
 }
 
-fn is_native_name(name: &str) -> bool {
+/// True when the library name identifies a native artifact for `os`.
+fn is_native_name(name: &str, os: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    lower.contains(":natives-")
-        || lower.contains("natives-windows")
-        || lower.contains("natives-linux")
-        || lower.contains("natives-macos")
-        || lower.contains("natives-osx")
+    let Some((_, rest)) = lower.split_once("natives-") else {
+        return false;
+    };
+    let built_for = rest.split(['.', ':', '-']).next().unwrap_or_default();
+    match os {
+        "windows" => built_for == "windows",
+        "osx" => built_for == "osx" || built_for == "macos",
+        _ => built_for == "linux",
+    }
 }
 
-fn wrong_arch_native(name: &str) -> bool {
+/// True for native libraries built for another OS or CPU, so a Windows x64
+/// launcher never puts a Linux `.so` or an ARM `.dll` on the classpath.
+fn wrong_arch_native(name: &str, os: &str, arch: &str) -> bool {
     let lower = name.to_ascii_lowercase();
-    if cfg!(target_arch = "x86_64")
-        && (lower.contains("natives-windows-arm64") || lower.contains("natives-windows-x86"))
-    {
+    let Some(rest) = lower.split_once("natives-").map(|(_, rest)| rest) else {
+        return false;
+    };
+    let mut tokens = rest.split(['.', ':', '-']);
+    let Some(built_for) = tokens.next() else {
+        return false;
+    };
+    let os_matches = match os {
+        "windows" => built_for == "windows",
+        "osx" => built_for == "osx" || built_for == "macos",
+        _ => built_for == "linux",
+    };
+    if !os_matches {
         return true;
     }
-    if cfg!(target_arch = "aarch64") && lower.contains("natives-windows-x86") {
-        return true;
+    // The trailing qualifier, when present, names the CPU: `windows-arm64`,
+    // `windows-x86`, `linux-aarch64`, `macos-arm64`. A bare `natives-windows`
+    // jar is the generic 32/64 build and matches every host.
+    let qualifier = rest.split('-').next_back().unwrap_or_default();
+    let built_arch = if qualifier.contains("arm64") || qualifier.contains("aarch64") {
+        Some("arm64")
+    } else if qualifier.contains("x86_64") {
+        Some("64")
+    } else if qualifier.contains("x86") {
+        Some("32")
+    } else if qualifier == "64" {
+        Some("64")
+    } else if qualifier == "32" {
+        Some("32")
+    } else {
+        None
+    };
+    match built_arch {
+        Some(built) => built != arch,
+        None => false,
     }
-    lower.contains("natives-linux")
-        || lower.contains("natives-macos")
-        || lower.contains("natives-osx")
 }
 
 pub fn classpath_separator() -> &'static str {
@@ -1477,6 +1560,8 @@ pub enum MinecraftError {
     MissingField(&'static str),
     #[error("некорректный хеш ассета: {0}")]
     InvalidAssetHash(String),
+    #[error("недопустимое значение {field}: {value}")]
+    InvalidId { field: String, value: String },
     #[error("небезопасный путь библиотеки: {0}")]
     UnsafeLibraryPath(String),
     #[error("недопустимый URL артефакта {url}: {reason}")]
@@ -1669,5 +1754,115 @@ mod tests {
             features: None,
         }];
         assert!(!rules_allow(&x86));
+    }
+
+    #[test]
+    fn asset_hashes_must_be_full_sha1() {
+        assert!(validate_asset_hash("0123456789abcdef0123456789abcdef01234567").is_ok());
+        assert!(validate_asset_hash("0123").is_err());
+        assert!(validate_asset_hash("../0123456789abcdef0123456789abcdef0123").is_err());
+        assert!(validate_asset_hash("g123456789abcdef0123456789abcdef01234567").is_err());
+    }
+
+    #[test]
+    fn path_ids_reject_traversal() {
+        assert_eq!(validate_path_id("v", "1.21.1").expect("valid id"), "1.21.1");
+        assert!(validate_path_id("v", "../evil").is_err());
+        assert!(validate_path_id("v", "a/b").is_err());
+        assert!(validate_path_id("v", "..").is_err());
+        assert!(validate_path_id("v", "").is_err());
+    }
+
+    #[test]
+    fn native_selection_follows_os_and_arch() {
+        let bare = "org.lwjgl:lwjgl:3.3.3:natives-windows";
+        assert!(!wrong_arch_native(bare, "windows", "64"));
+        assert!(!wrong_arch_native(bare, "windows", "arm64"));
+        assert!(wrong_arch_native(bare, "linux", "64"));
+        assert!(wrong_arch_native(bare, "osx", "arm64"));
+
+        assert!(wrong_arch_native(
+            "org.lwjgl:lwjgl:3.3.3:natives-windows-x86",
+            "windows",
+            "64"
+        ));
+        assert!(!wrong_arch_native(
+            "org.lwjgl:lwjgl:3.3.3:natives-windows-arm64",
+            "windows",
+            "arm64"
+        ));
+        assert!(wrong_arch_native(
+            "org.lwjgl:lwjgl:3.3.3:natives-windows-arm64",
+            "windows",
+            "64"
+        ));
+        assert!(!wrong_arch_native(
+            "org.lwjgl:lwjgl:3.3.3:natives-macos",
+            "osx",
+            "64"
+        ));
+        assert!(!wrong_arch_native(
+            "org.lwjgl:lwjgl:3.3.3:natives-macos-arm64",
+            "osx",
+            "arm64"
+        ));
+        assert!(!wrong_arch_native(
+            "org.lwjgl:lwjgl:3.3.3:natives-linux",
+            "linux",
+            "64"
+        ));
+        assert!(wrong_arch_native(
+            "org.lwjgl:lwjgl:3.3.3:natives-linux",
+            "windows",
+            "64"
+        ));
+    }
+
+    #[test]
+    fn native_classifier_uses_target_os_and_arch() {
+        let mut natives = BTreeMap::new();
+        natives.insert("windows".to_owned(), "natives-windows-${arch}".to_owned());
+        natives.insert("osx".to_owned(), "natives-macos".to_owned());
+        let library = Library {
+            name: "org.lwjgl:lwjgl:3.3.3".to_owned(),
+            natives: Some(natives),
+            ..Library::default()
+        };
+        assert_eq!(
+            native_classifier(&library, "windows", "64").as_deref(),
+            Some("natives-windows-64")
+        );
+        assert_eq!(
+            native_classifier(&library, "osx", "arm64").as_deref(),
+            Some("natives-macos")
+        );
+        assert_eq!(native_classifier(&library, "linux", "64"), None);
+    }
+
+    #[test]
+    fn classifier_urls_are_validated() {
+        let mut classifiers = BTreeMap::new();
+        classifiers.insert(
+            "natives-windows".to_owned(),
+            Artifact {
+                url: "file:///C:/evil.jar".to_owned(),
+                ..Artifact::default()
+            },
+        );
+        let mut natives = BTreeMap::new();
+        natives.insert("windows".to_owned(), "natives-windows".to_owned());
+        let library = Library {
+            name: "org.lwjgl:lwjgl:3.3.3".to_owned(),
+            downloads: Some(LibraryDownloads {
+                artifact: Some(Artifact {
+                    url: "https://libraries.minecraft.net/ok.jar".to_owned(),
+                    ..Artifact::default()
+                }),
+                classifiers: Some(classifiers),
+            }),
+            natives: Some(natives),
+            ..Library::default()
+        };
+        assert!(resolve_library(&library, "windows", "64").is_err());
     }
 }

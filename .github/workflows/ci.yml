@@ -57,13 +57,24 @@ jobs:
       - name: Fetch the offline NeoForge bundles
         shell: powershell
         run: ./tools/fetch-offline-bundles.ps1
+      # The release binary embeds the offline bundles, so the test suite has to
+      # run against that configuration as well, not only in the `check` job.
+      - name: Tests
+        run: cargo test --workspace
       - name: Build release executable
         run: cargo build --release
+      - name: Write SHA-256 checksum
+        shell: powershell
+        run: |
+          $hash = (Get-FileHash -Algorithm SHA256 target/release/OdiumLauncher.exe).Hash.ToLower()
+          Set-Content -NoNewline -Path target/release/OdiumLauncher.exe.sha256 -Value $hash
       - name: Upload executable
         uses: actions/upload-artifact@v4
         with:
           name: OdiumLauncher-windows-x64
-          path: target/release/OdiumLauncher.exe
+          path: |
+            target/release/OdiumLauncher.exe
+            target/release/OdiumLauncher.exe.sha256
           if-no-files-found: error
 
   build-macos:
@@ -88,13 +99,17 @@ jobs:
               -o "dist/neoforge-mirror/${file}" "${base}/${file}"
           done
           ls -l dist/neoforge-mirror
+      - name: Tests
+        run: cargo test --workspace
       - name: Build and package the macOS app
         run: bash tools/package-macos.sh
       - name: Upload DMG
         uses: actions/upload-artifact@v4
         with:
           name: OdiumLauncher-macos-universal
-          path: dist/OdiumLauncher-macos-universal.dmg
+          path: |
+            dist/OdiumLauncher-macos-universal.dmg
+            dist/OdiumLauncher-macos-universal.dmg.sha256
           if-no-files-found: error
 
   release:
@@ -122,7 +137,9 @@ jobs:
         with:
           files: |
             release/OdiumLauncher.exe
+            release/OdiumLauncher.exe.sha256
             release/OdiumLauncher-macos-universal.dmg
+            release/OdiumLauncher-macos-universal.dmg.sha256
             LICENSE
             THIRD-PARTY-NOTICES.md
           generate_release_notes: true

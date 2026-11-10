@@ -134,4 +134,6 @@ hdiutil detach "${MOUNT}" || hdiutil detach "${MOUNT}" -force
 hdiutil convert "${RW_DMG}" -format UDZO -imagekey zlib-level=9 -ov -o "${DMG}"
 rm -f "${RW_DMG}"
 
-echo "==> Done: ${DMG}"
+echo "==> Writing the SHA-256 checksum"
+shasum -a 256 "${DMG}" | awk '{print $1}' > "${DMG}.sha256"
+echo "==> Done: ${DMG} (+ .sha256)"

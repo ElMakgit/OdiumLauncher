@@ -167,14 +167,25 @@ pub fn schedule_exe_removal(exe: &Path) -> io::Result<()> {
     }
 }
 
+/// Directory names the launcher itself creates. The uninstaller only accepts a
+/// root with one of these names: a hand-edited `ODIUM_DATA_DIR` pointing at
+/// `Documents` or a drive root can never be wiped by mistake.
+const SAFE_ROOT_NAMES: [&str; 2] = ["OdiumLauncher", "launcher_data"];
+
 /// Rejects paths whose recursive removal would wipe something the launcher does
-/// not own: filesystem roots, the user profile, temp folders and anything that
-/// contains the running executable.
+/// not own. The name allowlist is the primary guard; the remaining checks catch
+/// a symlinked or relocated folder that happens to carry the right name.
 fn is_safe_root(root: &Path) -> bool {
     let Some(name) = root.file_name().and_then(|name| name.to_str()) else {
         return false;
     };
     if name.is_empty() || root.parent().is_none() {
+        return false;
+    }
+    if !SAFE_ROOT_NAMES
+        .iter()
+        .any(|allowed| name.eq_ignore_ascii_case(allowed))
+    {
         return false;
     }
     if canonical_eq(root, &std::env::temp_dir()) {
@@ -303,6 +314,19 @@ mod tests {
         let root = temp.path().join("OdiumLauncher");
         fs::create_dir_all(&root).unwrap();
         let canonical = fs::canonicalize(&root).unwrap();
+        assert!(is_safe_root(&canonical));
+    }
+
+    #[test]
+    fn refuses_a_folder_with_a_foreign_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Documents");
+        fs::create_dir_all(&root).unwrap();
+        assert!(!is_safe_root(&root));
+
+        let portable = temp.path().join("launcher_data");
+        fs::create_dir_all(&portable).unwrap();
+        let canonical = fs::canonicalize(&portable).unwrap();
         assert!(is_safe_root(&canonical));
     }
 }

@@ -167,6 +167,12 @@ $rewritten = 0
 foreach ($entry in @($files) + @($optional)) {
     if ($overrideFiles.ContainsKey($entry.path)) {
         $entry.url = "$rawBase/overrides/" + (ConvertTo-UrlPath $entry.path)
+        # A published manifest must describe the bytes that will actually be
+        # served: an edited override with a stale digest fails verification on
+        # every player's machine, so the hash and size are recomputed here.
+        $file = $overrideFiles[$entry.path]
+        $entry.sha256 = Get-Sha256 $file.FullName
+        $entry.size = [long]$file.Length
         $rewritten++
     }
 }

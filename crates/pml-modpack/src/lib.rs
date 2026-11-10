@@ -96,6 +96,32 @@ impl ManifestFile {
     }
 }
 
+/// Paths that belong to the player, not to the pack. A manifest or an
+/// `overrides/` folder must never create, replace or delete them; sync and reset
+/// skip them even if an older launcher recorded them in its state file.
+pub const RESERVED_USER_PATHS: [&str; 9] = [
+    "saves",
+    "screenshots",
+    "logs",
+    "crash-reports",
+    "options.txt",
+    "servers.dat",
+    "servers.dat_old",
+    "usercache.json",
+    "launcher_profiles.json",
+];
+
+/// True for a path equal to a reserved entry or below a reserved directory.
+pub fn is_reserved_path(relative: &str) -> bool {
+    let normalized = normalize_path(relative);
+    RESERVED_USER_PATHS.iter().any(|reserved| {
+        normalized == *reserved
+            || normalized
+                .strip_prefix(reserved)
+                .is_some_and(|rest| rest.starts_with('/'))
+    })
+}
+
 impl Manifest {
     pub fn from_json(bytes: &[u8]) -> Result<Self, ModpackError> {
         let manifest: Self = serde_json::from_slice(bytes).map_err(ModpackError::ManifestJson)?;
@@ -176,6 +202,12 @@ impl ManifestFile {
         }
         if normalized.starts_with('/') || normalized.contains(':') {
             return Err(ModpackError::UnsafePath(self.path.clone()));
+        }
+        if is_reserved_path(&normalized) {
+            return Err(ModpackError::Validation(format!(
+                "файл {} посягает на пользовательский путь",
+                self.path
+            )));
         }
         if self.url.trim().is_empty() {
             return Err(ModpackError::Validation(format!(
@@ -542,6 +574,12 @@ impl ModpackSync {
 
         for file in enabled {
             let relative = normalize_path(&file.path);
+            // `validate` already rejects these, but a manifest loaded by an
+            // older build may still be in the cache: never touch them.
+            if is_reserved_path(&relative) {
+                tracing::warn!(%relative, "skipping a manifest entry that targets a user path");
+                continue;
+            }
             let Some((algo, digest)) = file.best_hash() else {
                 return Err(ModpackError::Validation(format!(
                     "у файла {} нет контрольной суммы",
@@ -589,6 +627,12 @@ impl ModpackSync {
             .cloned()
             .collect::<Vec<_>>();
         for relative in stale {
+            if is_reserved_path(&relative) {
+                // A previous launcher may have recorded a user file as pack
+                // content. Forget the record instead of deleting the world.
+                state.files.remove(&relative);
+                continue;
+            }
             if is_safe_relative(Path::new(&relative)) {
                 let path = request.instance_dir.join(path_buf(&relative));
                 match tokio::fs::remove_file(&path).await {
@@ -674,6 +718,10 @@ pub async fn reset_instance(
 
     let mut report = ResetReport::default();
     for relative in targets {
+        if is_reserved_path(&relative) {
+            tracing::warn!(%relative, "keeping a user path while resetting an instance");
+            continue;
+        }
         if !is_safe_relative(Path::new(&relative)) {
             tracing::warn!(%relative, "skipping unsafe path while resetting an instance");
             continue;
@@ -1040,6 +1088,59 @@ mod tests {
         let mut manifest = sample_manifest();
         manifest.optional_files[0].path = "mods/example.jar".to_owned();
         assert!(manifest.validate().is_err());
+    }
+
+    #[test]
+    fn rejects_manifest_entries_for_user_paths() {
+        for reserved in [
+            "saves/world/level.dat",
+            "options.txt",
+            "screenshots/shot.png",
+            "servers.dat",
+            "launcher_profiles.json",
+        ] {
+            let mut manifest = sample_manifest();
+            manifest.files[0].path = reserved.to_owned();
+            assert!(manifest.validate().is_err(), "path {reserved:?}");
+        }
+        assert!(is_reserved_path("logs/latest.log"));
+        assert!(is_reserved_path("saves"));
+        assert!(!is_reserved_path("config/logs.txt"));
+        assert!(!is_reserved_path("mods/saves.jar"));
+    }
+
+    #[tokio::test]
+    async fn reset_keeps_user_paths_recorded_by_an_old_build(
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let instance = directory.path().join("instance");
+        std::fs::create_dir_all(instance.join("saves").join("world"))?;
+        std::fs::create_dir_all(instance.join("logs"))?;
+        std::fs::write(instance.join("saves/world/level.dat"), b"world")?;
+        std::fs::write(instance.join("logs/latest.log"), b"log")?;
+
+        let state = SyncState {
+            schema_version: MANIFEST_SCHEMA_VERSION,
+            pack_version: "1.0.0".to_owned(),
+            files: BTreeMap::from([
+                ("saves/world/level.dat".to_owned(), "a".repeat(64)),
+                ("logs/latest.log".to_owned(), "b".repeat(64)),
+            ]),
+        };
+        std::fs::write(instance.join(STATE_FILE), serde_json::to_vec(&state)?)?;
+
+        let report = reset_instance(
+            &instance,
+            &[
+                "saves/world/level.dat".to_owned(),
+                "logs/latest.log".to_owned(),
+            ],
+        )
+        .await?;
+        assert_eq!(report.removed, 0);
+        assert!(instance.join("saves/world/level.dat").is_file());
+        assert!(instance.join("logs/latest.log").is_file());
+        Ok(())
     }
 
     #[test]

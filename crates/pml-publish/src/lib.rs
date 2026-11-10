@@ -81,6 +81,8 @@ fn stage(report: &Reporter, text: impl Into<String>) {
 pub enum PublishError {
     #[error("некорректный репозиторий: {0}")]
     Repo(String),
+    #[error("некорректный GitHub-токен: {0}")]
+    Token(String),
     #[error("файл не найден: {0}")]
     MissingFile(String),
     #[error("GitHub: {0}")]
@@ -187,24 +189,32 @@ pub struct Publisher {
 
 impl Publisher {
     pub fn new(token: impl Into<String>) -> Result<Self, PublishError> {
+        // Copy-pasted tokens often carry a trailing newline or spaces. Reject a
+        // token that is blank or contains a header-breaking character instead
+        // of silently sending an empty `Authorization` header, which turns a
+        // clear input mistake into a confusing 401 from GitHub.
+        let token = token.into().trim().to_owned();
+        if token.is_empty() {
+            return Err(PublishError::Token("токен пуст".to_owned()));
+        }
+        if token.len() > 512 || !token.chars().all(|character| character.is_ascii_graphic()) {
+            return Err(PublishError::Token(
+                "токен содержит пробелы или недопустимые символы".to_owned(),
+            ));
+        }
         let client = reqwest::Client::builder()
             .user_agent(USER_AGENT)
             .connect_timeout(CONNECT_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()?;
-        Ok(Self {
-            client,
-            token: token.into(),
-        })
+        Ok(Self { client, token })
     }
 
     fn authorized(&self, builder: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+        let value = HeaderValue::from_str(&format!("Bearer {}", self.token))
+            .unwrap_or_else(|_| HeaderValue::from_static(""));
         builder
-            .header(
-                header::AUTHORIZATION,
-                HeaderValue::from_str(&format!("Bearer {}", self.token))
-                    .unwrap_or_else(|_| HeaderValue::from_static("")),
-            )
+            .header(header::AUTHORIZATION, value)
             .header(header::ACCEPT, "application/vnd.github+json")
             .header("X-GitHub-Api-Version", "2022-11-28")
     }
@@ -1102,10 +1112,64 @@ pub struct DistResult {
     pub exe_copied: bool,
 }
 
+/// Guards the one recursive delete in [`build_dist`]. The output folder is
+/// replaced wholesale, so an accidental `Documents` or the repository root in
+/// the path field must be refused instead of erased.
+fn ensure_dist_target(dir: &Path) -> Result<(), PublishError> {
+    let Some(name) = dir.file_name().and_then(|name| name.to_str()) else {
+        return Err(PublishError::MissingFile(format!(
+            "некорректная папка сборки: {}",
+            dir.display()
+        )));
+    };
+    if name.is_empty() || name == "." || name == ".." || dir.parent().is_none() {
+        return Err(PublishError::MissingFile(format!(
+            "некорректная папка сборки: {}",
+            dir.display()
+        )));
+    }
+    // Refuse a folder that contains the working directory or the running
+    // executable: the player never wants either of them deleted.
+    let canonical = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    if let Ok(cwd) = std::env::current_dir() {
+        let cwd = std::fs::canonicalize(&cwd).unwrap_or(cwd);
+        if cwd.starts_with(&canonical) {
+            return Err(PublishError::MissingFile(format!(
+                "папка сборки {} содержит текущий каталог",
+                dir.display()
+            )));
+        }
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
+        if exe.starts_with(&canonical) {
+            return Err(PublishError::MissingFile(format!(
+                "папка сборки {} содержит запущенный лаунчер",
+                dir.display()
+            )));
+        }
+    }
+    if dir.exists() {
+        // Only replace an earlier dist build. Any other existing folder was
+        // selected by mistake and is left for the user to inspect.
+        let looks_like_dist = dir.join(pml_config::PORTABLE_MARKER).is_file()
+            || dir.join("launcher_data").is_dir()
+            || dir.join("OdiumLauncher.exe").is_file();
+        if !looks_like_dist {
+            return Err(PublishError::MissingFile(format!(
+                "папка {} не похожа на предыдущую сборку; удалите её вручную",
+                dir.display()
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// Writes `launcher_data/config.json`, copies the launcher executable, writes
 /// `README.txt` and packs everything into a ZIP next to the output folder.
 pub fn build_dist(request: &DistRequest) -> Result<DistResult, PublishError> {
     let dir = request.output_dir.clone();
+    ensure_dist_target(&dir)?;
     let parent = dir.parent().unwrap_or_else(|| Path::new("."));
     let Some(name) = dir.file_name() else {
         return Err(PublishError::MissingFile(format!(
@@ -1388,6 +1452,7 @@ mod tests {
         std::fs::write(&fake_exe, b"exe").expect("write");
         let output = temp.path().join("dist");
         std::fs::create_dir_all(&output).expect("old dist");
+        std::fs::write(output.join(pml_config::PORTABLE_MARKER), b"old build").expect("marker");
         std::fs::write(output.join("stale-from-previous-build.txt"), b"leak").expect("stale");
         let result = build_dist(&DistRequest {
             output_dir: output.clone(),
@@ -1425,5 +1490,39 @@ mod tests {
             .path()
             .join("OdiumLauncher-test-pack.zip.sha256")
             .is_file());
+    }
+
+    #[test]
+    fn publisher_rejects_blank_or_header_breaking_tokens() {
+        for token in ["", "   ", "\n", "ghp token", "ghp_token\r\nX-Evil: 1"] {
+            assert!(
+                matches!(Publisher::new(token), Err(PublishError::Token(_))),
+                "token {token:?} must be rejected"
+            );
+        }
+        assert!(Publisher::new("  ghp_example_token  ").is_ok());
+    }
+
+    #[test]
+    fn build_dist_refuses_an_unrelated_folder() {
+        let temp = tempfile::tempdir().expect("temp");
+        let output = temp.path().join("Documents");
+        std::fs::create_dir_all(&output).expect("dir");
+        std::fs::write(output.join("important.txt"), b"keep").expect("file");
+        let request = DistRequest {
+            output_dir: output.clone(),
+            source_id: "test-pack".to_owned(),
+            source_name: "Test pack".to_owned(),
+            pack_url: "https://example.com/pack.mrpack".to_owned(),
+            kind: SourceKind::Mrpack,
+            server: ServerSpec::default(),
+            xms: 2048,
+            xmx: 6144,
+            pack_label: "test".to_owned(),
+            exe: None,
+        };
+        let error = build_dist(&request).expect_err("must refuse");
+        assert!(matches!(error, PublishError::MissingFile(_)));
+        assert!(output.join("important.txt").is_file());
     }
 }

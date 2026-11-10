@@ -27,6 +27,12 @@ const OVERRIDE_PREFIXES: [&str; 2] = ["overrides/", "client-overrides/"];
 /// either corrupt or hostile; refusing early beats filling the disk.
 pub const MAX_OVERRIDE_BYTES: u64 = 1024 * 1024 * 1024;
 pub const MAX_OVERRIDE_FILES: usize = 20_000;
+/// A Modrinth index is small JSON; a zip that inflates it to gigabytes is
+/// hostile, so the entry is read through a hard cap instead of `read_to_end`.
+pub const MAX_INDEX_BYTES: u64 = 16 * 1024 * 1024;
+/// The archive itself is streamed to disk, but not without an upper bound:
+/// a stuck or malicious host must not fill the player's drive.
+pub const MAX_ARCHIVE_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 /// Instance file that remembers which overrides snapshot was already applied.
 pub const OVERRIDES_STATE_FILE: &str = ".pml_overrides_state.json";
 
@@ -348,8 +354,18 @@ async fn stream_response_to_file(
             source,
         })?;
     let mut stream = response.bytes_stream();
+    let mut total: u64 = 0;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
+        total = total.saturating_add(chunk.len() as u64);
+        if total > MAX_ARCHIVE_BYTES {
+            drop(file);
+            let _ = tokio::fs::remove_file(dest).await;
+            return Err(ModpackError::Validation(format!(
+                ".mrpack больше {} МиБ",
+                MAX_ARCHIVE_BYTES / (1024 * 1024)
+            )));
+        }
         file.write_all(&chunk)
             .await
             .map_err(|source| ModpackError::Io {
@@ -379,13 +395,26 @@ pub fn read_index(path: &Path) -> Result<MrpackIndex, ModpackError> {
     let mut entry = zip.by_name(INDEX_FILE).map_err(|_| {
         ModpackError::Validation(format!("в архиве нет {INDEX_FILE}: {}", path.display()))
     })?;
+    if entry.size() > MAX_INDEX_BYTES {
+        return Err(ModpackError::Validation(format!(
+            "{INDEX_FILE} больше {} МиБ",
+            MAX_INDEX_BYTES / (1024 * 1024)
+        )));
+    }
     let mut bytes = Vec::new();
-    entry
+    (&mut entry)
+        .take(MAX_INDEX_BYTES.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|source| ModpackError::Io {
             path: path.to_path_buf(),
             source,
         })?;
+    if bytes.len() as u64 > MAX_INDEX_BYTES {
+        return Err(ModpackError::Validation(format!(
+            "{INDEX_FILE} больше {} МиБ",
+            MAX_INDEX_BYTES / (1024 * 1024)
+        )));
+    }
     MrpackIndex::parse(&bytes)
 }
 
@@ -462,19 +491,17 @@ pub fn extract_overrides_with_limits(
         if !is_safe_relative(Path::new(relative)) {
             return Err(ModpackError::UnsafePath(relative.to_owned()));
         }
-        if managed.contains(&crate::normalize_path(relative)) {
+        let normalized = crate::normalize_path(relative);
+        if managed.contains(&normalized) {
+            continue;
+        }
+        if crate::is_reserved_path(&normalized) {
+            tracing::warn!(%normalized, "skipping an override that targets a user path");
             continue;
         }
         if written >= max_files {
             return Err(ModpackError::Validation(format!(
                 "в overrides больше {max_files} файлов"
-            )));
-        }
-        total_bytes = total_bytes.saturating_add(entry.size());
-        if total_bytes > max_bytes {
-            return Err(ModpackError::Validation(format!(
-                "overrides распаковываются более чем в {} МиБ",
-                max_bytes / (1024 * 1024)
             )));
         }
         let destination = instance_dir.join(relative.replace('/', std::path::MAIN_SEPARATOR_STR));
@@ -496,10 +523,25 @@ pub fn extract_overrides_with_limits(
                 path: destination.clone(),
                 source,
             })?;
-        std::io::copy(&mut entry, &mut output).map_err(|source| ModpackError::Io {
-            path: destination.clone(),
-            source,
-        })?;
+        // The zip header can lie about the uncompressed size, so the cap is
+        // enforced on the bytes that really arrive: `take` stops one byte past
+        // the remaining budget and the check below rejects the entry.
+        let remaining = max_bytes.saturating_sub(total_bytes);
+        let mut reader = (&mut entry).take(remaining.saturating_add(1));
+        let copied =
+            std::io::copy(&mut reader, &mut output).map_err(|source| ModpackError::Io {
+                path: destination.clone(),
+                source,
+            })?;
+        if copied > remaining {
+            drop(output);
+            let _ = std::fs::remove_file(&destination);
+            return Err(ModpackError::Validation(format!(
+                "overrides распаковываются более чем в {} МиБ",
+                max_bytes / (1024 * 1024)
+            )));
+        }
+        total_bytes = total_bytes.saturating_add(copied);
         output.flush().map_err(|source| ModpackError::Io {
             source,
             path: destination,
@@ -783,6 +825,37 @@ mod tests {
             extract_overrides_with_limits(&archive, &instance, 1024, 1, &BTreeSet::new(), None)
                 .expect_err("file limit must be enforced");
         assert!(matches!(error, ModpackError::Validation(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn overrides_never_touch_user_paths() -> Result<(), Box<dyn std::error::Error>> {
+        let directory = tempfile::tempdir()?;
+        let archive = directory.path().join("pack.mrpack");
+        write_pack(
+            &archive,
+            &[
+                ("overrides/options.txt", b"pack options"),
+                ("overrides/saves/world/level.dat", b"pack world"),
+                ("overrides/config/ok.toml", b"shipped"),
+            ],
+        );
+        let instance = directory.path().join("instance");
+        std::fs::create_dir_all(instance.join("saves").join("world"))?;
+        std::fs::write(instance.join("options.txt"), b"user options")?;
+        std::fs::write(instance.join("saves/world/level.dat"), b"user world")?;
+
+        let written = extract_overrides(&archive, &instance)?;
+        assert_eq!(written, 1, "only config/ok.toml is extracted");
+        assert_eq!(
+            std::fs::read(instance.join("options.txt"))?,
+            b"user options"
+        );
+        assert_eq!(
+            std::fs::read(instance.join("saves/world/level.dat"))?,
+            b"user world"
+        );
+        assert_eq!(std::fs::read(instance.join("config/ok.toml"))?, b"shipped");
         Ok(())
     }
 

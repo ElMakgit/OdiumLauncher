@@ -48,15 +48,15 @@ pub const SERVER_LIST_NAME: &str = match option_env!("ODIUM_SERVER_LIST_NAME") {
 /// manifest and server at compile time; the Odium values remain the fallback.
 pub const DEFAULT_SOURCE_ID: &str = match option_env!("ODIUM_DEFAULT_SOURCE_ID") {
     Some(id) => id,
-    None => "odium",
+    None => "vanilla",
 };
 pub const DEFAULT_SOURCE_NAME: &str = match option_env!("ODIUM_DEFAULT_SOURCE_NAME") {
     Some(name) => name,
-    None => "Odium",
+    None => "Vanilla 1.21.1 (Fabric)",
 };
 pub const DEFAULT_SOURCE_URL: &str = match option_env!("ODIUM_DEFAULT_SOURCE_URL") {
     Some(url) => url,
-    None => "https://raw.githubusercontent.com/ElMakgit/Odium/main/EblyaCraft%20Don%27s%20Edit%202.3.1.mrpack",
+    None => "builtin://vanilla",
 };
 const DEFAULT_SERVER_IP: &str = match option_env!("ODIUM_DEFAULT_SERVER_IP") {
     Some(ip) => ip,
@@ -219,7 +219,13 @@ impl Default for ServerSpec {
 
 impl ServerSpec {
     pub fn display(&self) -> String {
-        format!("{}:{}", self.ip, self.port)
+        // IPv6 literals need brackets before the port, otherwise `::1:25565`
+        // is ambiguous and Minecraft's server list rejects it.
+        if self.ip.contains(':') && !self.ip.starts_with('[') {
+            format!("[{}]:{}", self.ip, self.port)
+        } else {
+            format!("{}:{}", self.ip, self.port)
+        }
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
@@ -366,13 +372,18 @@ pub struct Config {
 
 impl Default for Config {
     fn default() -> Self {
+        let sources = default_sources();
         Self {
             schema_version: CONFIG_SCHEMA_VERSION,
             nick: default_nick(),
-            sources: default_sources(),
-            // The distributor's source is primary. The embedded vanilla entry
-            // remains available as a network-free fallback.
-            active_source_id: DEFAULT_SOURCE_ID.to_owned(),
+            // Whatever `default_sources()` returned is primary, so a build with
+            // no distributor URL starts on the embedded vanilla manifest
+            // instead of pointing at a missing network source.
+            active_source_id: sources
+                .first()
+                .map(|source| source.id.clone())
+                .unwrap_or_else(|| DEFAULT_SOURCE_ID.to_owned()),
+            sources,
             jvm: JvmConfig::default(),
             server: ServerSpec::default(),
             optional_mods_overrides: BTreeMap::new(),
@@ -549,24 +560,29 @@ where
     })
 }
 
-/// The first source points at the published Odium `.mrpack`; the second is an
-/// embedded, network-free manifest so a freshly built executable is always
-/// usable.
+/// The primary source comes from the distributor at compile time. Without an
+/// `ODIUM_DEFAULT_SOURCE_URL` the launcher starts on its embedded, network-free
+/// vanilla manifest, so a fresh build is usable offline out of the box.
 pub fn default_sources() -> Vec<Source> {
-    vec![
-        Source {
-            id: DEFAULT_SOURCE_ID.to_owned(),
-            name: DEFAULT_SOURCE_NAME.to_owned(),
-            manifest_url: DEFAULT_SOURCE_URL.to_owned(),
-            kind: Some(SourceKind::detect(DEFAULT_SOURCE_URL)),
-        },
-        Source {
+    let primary = Source {
+        id: DEFAULT_SOURCE_ID.to_owned(),
+        name: DEFAULT_SOURCE_NAME.to_owned(),
+        manifest_url: DEFAULT_SOURCE_URL.to_owned(),
+        kind: Some(SourceKind::detect(DEFAULT_SOURCE_URL)),
+    };
+    if primary.manifest_url == "builtin://vanilla" {
+        return vec![primary];
+    }
+    let mut sources = vec![primary];
+    if DEFAULT_SOURCE_ID != "vanilla" {
+        sources.push(Source {
             id: "vanilla".to_owned(),
             name: "Vanilla 1.21.1 (Fabric)".to_owned(),
             manifest_url: "builtin://vanilla".to_owned(),
             kind: None,
-        },
-    ]
+        });
+    }
+    sources
 }
 
 pub fn validate_nick(nick: &str) -> Result<(), ConfigError> {
@@ -1280,6 +1296,35 @@ mod tests {
         assert!(config.active_source().is_some());
         assert_eq!(config.active_source_id, DEFAULT_SOURCE_ID);
         assert!(config.jvm.auto_xmx, "new installs use half of the RAM");
+    }
+
+    #[test]
+    fn default_sources_and_active_id_agree() {
+        let config = Config::default();
+        assert_eq!(
+            config.sources.first().map(|source| source.id.as_str()),
+            Some(config.active_source_id.as_str())
+        );
+        if DEFAULT_SOURCE_URL == "builtin://vanilla" {
+            assert_eq!(config.sources.len(), 1, "no duplicate vanilla entry");
+            assert_eq!(config.sources[0].manifest_url, "builtin://vanilla");
+        }
+    }
+
+    #[test]
+    fn ipv6_server_displays_with_brackets() {
+        let server = ServerSpec {
+            ip: "2001:db8::1".to_owned(),
+            port: 25565,
+        };
+        assert_eq!(server.display(), "[2001:db8::1]:25565");
+        let bracketed = ServerSpec {
+            ip: "[2001:db8::1]".to_owned(),
+            port: 25565,
+        };
+        assert_eq!(bracketed.display(), "[2001:db8::1]:25565");
+        let ipv4 = ServerSpec::default();
+        assert_eq!(ipv4.display(), format!("{}:{}", ipv4.ip, ipv4.port));
     }
 
     #[test]
