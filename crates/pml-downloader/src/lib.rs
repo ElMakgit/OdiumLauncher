@@ -1956,8 +1956,16 @@ pub fn safe_extract_zip_with_cancel(
 }
 
 /// Rejects absolute paths, drive prefixes, `..` and empty components.
+///
+/// The check is host-independent on purpose: the same manifest is read by the
+/// Windows and the macOS build, and on Unix `Path::new("C:\\Windows\\evil.dll")`
+/// is a single normal component. Backslashes and colons are refused everywhere,
+/// so an archive cannot escape the target directory on another operating system.
 pub fn is_safe_relative(path: &Path) -> bool {
-    if path.as_os_str().is_empty() {
+    let Some(text) = path.to_str() else {
+        return false;
+    };
+    if text.is_empty() || text.contains('\\') || text.contains(':') {
         return false;
     }
     path.components()
@@ -2422,8 +2430,14 @@ mod tests {
     #[test]
     fn safe_relative_paths() {
         assert!(is_safe_relative(Path::new("mods/example.jar")));
+        assert!(is_safe_relative(Path::new("./mods/example.jar")));
         assert!(!is_safe_relative(Path::new("../example.jar")));
         assert!(!is_safe_relative(Path::new("C:\\Windows\\evil.dll")));
+        assert!(!is_safe_relative(Path::new("C:/Windows/evil.dll")));
+        // Backslashes are separators on Windows and plain characters on Unix:
+        // both interpretations must be rejected, or the same archive would be
+        // safe on one OS and unsafe on the other.
+        assert!(!is_safe_relative(Path::new("mods\\example.jar")));
         assert!(!is_safe_relative(Path::new("")));
     }
 
